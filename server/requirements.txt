@@ -1,0 +1,15 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+python-multipart
+numpy
+librosa==0.10.1
+soundfile
+mido
+pretty_midi
+torch
+torchaudio
+piano-transcription-inference
+basic-pitch==0.4.0
+tensorflow-macos==2.14.0
+tensorflow-metal==1.1.0
+
