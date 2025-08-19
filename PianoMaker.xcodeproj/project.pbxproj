@@ -1,0 +1,575 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		FA34AD662E4C44F3003F3441 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FA34AD502E4C44F1003F3441 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FA34AD572E4C44F1003F3441;
+			remoteInfo = PianoMaker;
+		};
+		FA34AD702E4C44F3003F3441 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FA34AD502E4C44F1003F3441 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FA34AD572E4C44F1003F3441;
+			remoteInfo = PianoMaker;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		FA34AD582E4C44F1003F3441 /* PianoMaker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PianoMaker.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA34AD652E4C44F3003F3441 /* PianoMakerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PianoMakerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA34AD6F2E4C44F3003F3441 /* PianoMakerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PianoMakerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		FA34AD5A2E4C44F1003F3441 /* PianoMaker */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PianoMaker;
+			sourceTree = "<group>";
+		};
+		FA34AD682E4C44F3003F3441 /* PianoMakerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PianoMakerTests;
+			sourceTree = "<group>";
+		};
+		FA34AD722E4C44F3003F3441 /* PianoMakerUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PianoMakerUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FA34AD552E4C44F1003F3441 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA34AD622E4C44F3003F3441 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA34AD6C2E4C44F3003F3441 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		FA34AD4F2E4C44F1003F3441 = {
+			isa = PBXGroup;
+			children = (
+				FA34AD5A2E4C44F1003F3441 /* PianoMaker */,
+				FA34AD682E4C44F3003F3441 /* PianoMakerTests */,
+				FA34AD722E4C44F3003F3441 /* PianoMakerUITests */,
+				FA34AD592E4C44F1003F3441 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FA34AD592E4C44F1003F3441 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FA34AD582E4C44F1003F3441 /* PianoMaker.app */,
+				FA34AD652E4C44F3003F3441 /* PianoMakerTests.xctest */,
+				FA34AD6F2E4C44F3003F3441 /* PianoMakerUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FA34AD572E4C44F1003F3441 /* PianoMaker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FA34AD792E4C44F3003F3441 /* Build configuration list for PBXNativeTarget "PianoMaker" */;
+			buildPhases = (
+				FA34AD542E4C44F1003F3441 /* Sources */,
+				FA34AD552E4C44F1003F3441 /* Frameworks */,
+				FA34AD562E4C44F1003F3441 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FA34AD5A2E4C44F1003F3441 /* PianoMaker */,
+			);
+			name = PianoMaker;
+			packageProductDependencies = (
+			);
+			productName = PianoMaker;
+			productReference = FA34AD582E4C44F1003F3441 /* PianoMaker.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FA34AD642E4C44F3003F3441 /* PianoMakerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FA34AD7C2E4C44F3003F3441 /* Build configuration list for PBXNativeTarget "PianoMakerTests" */;
+			buildPhases = (
+				FA34AD612E4C44F3003F3441 /* Sources */,
+				FA34AD622E4C44F3003F3441 /* Frameworks */,
+				FA34AD632E4C44F3003F3441 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FA34AD672E4C44F3003F3441 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FA34AD682E4C44F3003F3441 /* PianoMakerTests */,
+			);
+			name = PianoMakerTests;
+			packageProductDependencies = (
+			);
+			productName = PianoMakerTests;
+			productReference = FA34AD652E4C44F3003F3441 /* PianoMakerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		FA34AD6E2E4C44F3003F3441 /* PianoMakerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FA34AD7F2E4C44F3003F3441 /* Build configuration list for PBXNativeTarget "PianoMakerUITests" */;
+			buildPhases = (
+				FA34AD6B2E4C44F3003F3441 /* Sources */,
+				FA34AD6C2E4C44F3003F3441 /* Frameworks */,
+				FA34AD6D2E4C44F3003F3441 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FA34AD712E4C44F3003F3441 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FA34AD722E4C44F3003F3441 /* PianoMakerUITests */,
+			);
+			name = PianoMakerUITests;
+			packageProductDependencies = (
+			);
+			productName = PianoMakerUITests;
+			productReference = FA34AD6F2E4C44F3003F3441 /* PianoMakerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FA34AD502E4C44F1003F3441 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1640;
+				LastUpgradeCheck = 1640;
+				TargetAttributes = {
+					FA34AD572E4C44F1003F3441 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+					FA34AD642E4C44F3003F3441 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = FA34AD572E4C44F1003F3441;
+					};
+					FA34AD6E2E4C44F3003F3441 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = FA34AD572E4C44F1003F3441;
+					};
+				};
+			};
+			buildConfigurationList = FA34AD532E4C44F1003F3441 /* Build configuration list for PBXProject "PianoMaker" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = FA34AD4F2E4C44F1003F3441;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FA34AD592E4C44F1003F3441 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FA34AD572E4C44F1003F3441 /* PianoMaker */,
+				FA34AD642E4C44F3003F3441 /* PianoMakerTests */,
+				FA34AD6E2E4C44F3003F3441 /* PianoMakerUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FA34AD562E4C44F1003F3441 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA34AD632E4C44F3003F3441 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA34AD6D2E4C44F3003F3441 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FA34AD542E4C44F1003F3441 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA34AD612E4C44F3003F3441 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA34AD6B2E4C44F3003F3441 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FA34AD672E4C44F3003F3441 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FA34AD572E4C44F1003F3441 /* PianoMaker */;
+			targetProxy = FA34AD662E4C44F3003F3441 /* PBXContainerItemProxy */;
+		};
+		FA34AD712E4C44F3003F3441 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FA34AD572E4C44F1003F3441 /* PianoMaker */;
+			targetProxy = FA34AD702E4C44F3003F3441 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FA34AD772E4C44F3003F3441 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FA34AD782E4C44F3003F3441 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		FA34AD7A2E4C44F3003F3441 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/PianoMaker/backend/.venv/lib/python3.9/site-packages/watchfiles",
+					"$(PROJECT_DIR)/PianoMaker/backend/.venv/lib/python3.9/site-packages/orjson",
+					"$(PROJECT_DIR)/PianoMaker/backend/.venv/lib/python3.9/site-packages/pydantic_core",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Remax.PianoMaker;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FA34AD7B2E4C44F3003F3441 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/PianoMaker/backend/.venv/lib/python3.9/site-packages/watchfiles",
+					"$(PROJECT_DIR)/PianoMaker/backend/.venv/lib/python3.9/site-packages/orjson",
+					"$(PROJECT_DIR)/PianoMaker/backend/.venv/lib/python3.9/site-packages/pydantic_core",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Remax.PianoMaker;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FA34AD7D2E4C44F3003F3441 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Remax.PianoMakerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PianoMaker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PianoMaker";
+			};
+			name = Debug;
+		};
+		FA34AD7E2E4C44F3003F3441 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Remax.PianoMakerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PianoMaker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PianoMaker";
+			};
+			name = Release;
+		};
+		FA34AD802E4C44F3003F3441 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Remax.PianoMakerUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PianoMaker;
+			};
+			name = Debug;
+		};
+		FA34AD812E4C44F3003F3441 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8UN39P24Z5;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Remax.PianoMakerUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PianoMaker;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FA34AD532E4C44F1003F3441 /* Build configuration list for PBXProject "PianoMaker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA34AD772E4C44F3003F3441 /* Debug */,
+				FA34AD782E4C44F3003F3441 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FA34AD792E4C44F3003F3441 /* Build configuration list for PBXNativeTarget "PianoMaker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA34AD7A2E4C44F3003F3441 /* Debug */,
+				FA34AD7B2E4C44F3003F3441 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FA34AD7C2E4C44F3003F3441 /* Build configuration list for PBXNativeTarget "PianoMakerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA34AD7D2E4C44F3003F3441 /* Debug */,
+				FA34AD7E2E4C44F3003F3441 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FA34AD7F2E4C44F3003F3441 /* Build configuration list for PBXNativeTarget "PianoMakerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA34AD802E4C44F3003F3441 /* Debug */,
+				FA34AD812E4C44F3003F3441 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = FA34AD502E4C44F1003F3441 /* Project object */;
+}

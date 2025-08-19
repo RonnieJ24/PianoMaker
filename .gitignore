@@ -1,0 +1,54 @@
+# macOS
+.DS_Store
+
+# Python virtual envs and caches
+.venv/
+server/.venv/
+local-backend/.venv/
+__pycache__/
+*.pyc
+
+# Backend generated artifacts
+server/outputs/
+local-backend/static/
+server/live_tail.out
+*.log
+
+# Heavy local assets not for git
+Salamander_48khz24bit.tar.xz
+server/sfz/
+server/sfizz-src/
+server/sfizz_render
+
+# iOS build/user data
+DerivedData/
+*.xcuserstate
+PianoMaker.xcodeproj/xcuserdata/
+PianoMaker.xcodeproj/project.xcworkspace/xcuserdata/
+
+# SwiftPM / build caches
+.swiftpm/
+.build/
+
+# Editor junk
+*.swp
+*.swo
+
+# Extra ignores
+server/.venv311/
+local-backend/.venv/
+server/outputs/
+local-backend/static/
+server/sfz/
+server/sfizz-src/
+server/sfizz_render
+Salamander_48khz24bit.tar.xz
+
+# Exclude heavy app soundfonts from git
+PianoMaker/Resources/SoundFonts/*.sf2
+# Torch and cache
+server/.cache/
+# Any server venvs
+server/.venv*/
+# General venvs
+.venv*/
