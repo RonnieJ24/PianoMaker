@@ -52,3 +52,5 @@ server/.cache/
 server/.venv*/
 # General venvs
 .venv*/
+
+server/soundfonts/*.sf2
