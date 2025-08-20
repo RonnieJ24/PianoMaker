@@ -30,43 +30,10 @@ struct DetailView: View {
                     ShareLink(item: midi) {
                         Label("Share MIDI", systemImage: "square.and.arrow.up")
                     }
-                    Button(isRendering ? "Rendering…" : "Render Audio") {
+                    Button("Download MIDI") {
                         Task {
-                            isRendering = true
-                            defer { isRendering = false }
-                            if let wav = try? await vm.renderAudio(from: midi) {
-                                renderedURL = wav
-                            }
-                        }
-                    }
-                    Button(isRendering ? "Rendering…" : "Render (SFZ)") {
-                        Task {
-                            isRendering = true
-                            renderProgress = 0
-                            defer { isRendering = false }
-                            do {
-                                let midiData = try Data(contentsOf: midi)
-                                let jobId = try await TranscriptionAPI.startRenderSFZ(midiData: midiData)
-                                while true {
-                                    try await Task.sleep(nanoseconds: 900_000_000)
-                                    let status = try await TranscriptionAPI.pollRenderJob(jobId: jobId)
-                                    renderProgress = status.progress ?? renderProgress
-                                    if status.status == "done", let url = status.wav_url {
-                                        let (wavData, wavResp) = try await URLSession.shared.data(from: url)
-                                        guard let http = wavResp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { break }
-                                        let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                                            .appending(path: "Transcriptions", directoryHint: .isDirectory)
-                                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                                        let outURL = folder.appending(path: "\(UUID().uuidString)_sfz.wav")
-                                        try wavData.write(to: outURL)
-                                        renderedURL = outURL
-                                        renderProgress = 1.0
-                                        break
-                                    }
-                                    if status.status == "error" { break }
-                                }
-                            } catch {
-                                // ignore
+                            if let midiURL = vm.midiURL {
+                                await vm.downloadMIDIFile(from: midiURL, originalFilename: vm.selectedFileURL?.lastPathComponent ?? "song.mid")
                             }
                         }
                     }
@@ -86,6 +53,95 @@ struct DetailView: View {
                         }
                     }
                 }
+                
+                // SoundFont Selection for Rendering
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Choose SoundFont for Rendering:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Picker("SoundFont", selection: $vm.selectedSoundFont) {
+                        ForEach(TranscriptionAPI.SoundFont.allCases, id: \.self) { soundFont in
+                            Text(soundFont.rawValue).tag(soundFont)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    Text(vm.selectedSoundFont.description)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    
+                    HStack(spacing: 12) {
+                        Button(isRendering ? "Rendering…" : "Render with Selected SoundFont") {
+                            Task {
+                                isRendering = true
+                                renderProgress = 0
+                                defer { isRendering = false }
+                                
+                                do {
+                                    let midiData = try Data(contentsOf: midi)
+                                    print("🎵 DEBUG: Starting render with SoundFont: \(vm.selectedSoundFont.rawValue)")
+                                    
+                                    // Use the correct rendering method based on SoundFont type
+                                    let jobId = try await TranscriptionAPI.startRender(midiData: midiData, soundFont: vm.selectedSoundFont)
+                                    print("🎵 DEBUG: Render job started: \(jobId)")
+                                    
+                                    // Poll for completion with better error handling
+                                    var completed = false
+                                    for attempt in 1...60 { // Max 2 minutes
+                                        try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                                        
+                                        do {
+                                            let status = try await TranscriptionAPI.pollRenderJob(jobId: jobId)
+                                            print("🎵 DEBUG: Render attempt \(attempt): status=\(status.status), progress=\(status.progress ?? 0)")
+                                            renderProgress = status.progress ?? renderProgress
+                                            
+                                            if status.status == "done", let url = status.wav_url {
+                                                print("🎵 DEBUG: Render completed, downloading WAV...")
+                                                let (wavData, wavResp) = try await URLSession.shared.data(from: url)
+                                                guard let http = wavResp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { 
+                                                    print("🎵 DEBUG: Failed to download WAV - HTTP \(wavResp)")
+                                                    break 
+                                                }
+                                                
+                                                let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                                                    .appending(path: "Transcriptions", directoryHint: .isDirectory)
+                                                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                                                let outURL = folder.appending(path: "\(UUID().uuidString)_\(vm.selectedSoundFont.rawValue.replacingOccurrences(of: ".", with: "_")).wav")
+                                                try wavData.write(to: outURL)
+                                                renderedURL = outURL
+                                                renderProgress = 1.0
+                                                print("🎵 DEBUG: Render completed: \(outURL.path)")
+                                                completed = true
+                                                break
+                                            }
+                                            
+                                            if status.status == "error" {
+                                                print("🎵 DEBUG: Render failed with error")
+                                                break
+                                            }
+                                        } catch {
+                                            print("🎵 DEBUG: Error polling job \(jobId): \(error)")
+                                            // Continue trying for a few more attempts
+                                            if attempt > 10 {
+                                                break
+                                            }
+                                        }
+                                    }
+                                    
+                                    if !completed {
+                                        print("🎵 DEBUG: Render timed out or failed after 60 attempts")
+                                    }
+                                } catch {
+                                    print("🎵 DEBUG: Render error: \(error)")
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 8)
+                
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Menu("Sound") {
@@ -137,6 +193,11 @@ struct DetailView: View {
                     }
                     ShareLink(item: wav) {
                         Label("Share WAV", systemImage: "square.and.arrow.up")
+                    }
+                    Button("Download WAV") {
+                        Task {
+                            await vm.downloadWAVFile(from: wav, originalFilename: vm.selectedFileURL?.lastPathComponent ?? "song.wav")
+                        }
                     }
                 }
                 // WAV scrubber

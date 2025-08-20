@@ -225,27 +225,15 @@ async def separate_api(request: Request, file: UploadFile = File(...), model_ver
             instrumental_url = _copy(inst, "instrumental.wav")
             vocals_url = _copy(voc, "vocals.wav") if voc else None
         else:
-            # Hosted API route
+            # Use local separation for reliability
             try:
-                res = separate_audio_spleeter_api(wav_path)
-                backend = "spleeter_api"
-                instrumental_url = res.get("instrumental_url")
-                vocals_url = res.get("vocals_url")
-                if not instrumental_url and not vocals_url:
-                    raise RuntimeError("Hosted API returned no URLs")
-            except Exception as e:
-                if force:
-                    raise
-                # Fallback locally for robustness
-                fallback_from = "spleeter_api"
-                try:
-                    inst, voc = separate_audio(wav_path)
-                    backend = "demucs_hq"
-                except Exception:
-                    inst, voc = separate_audio_fast(wav_path)
-                    backend = "fast_local"
-                instrumental_url = _copy(inst, "instrumental.wav")
-                vocals_url = _copy(voc, "vocals.wav") if voc else None
+                inst, voc = separate_audio(wav_path)
+                backend = "demucs_hq"
+            except Exception:
+                inst, voc = separate_audio_fast(wav_path)
+                backend = "fast_local"
+            instrumental_url = _copy(inst, "instrumental.wav")
+            vocals_url = _copy(voc, "vocals.wav") if voc else None
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Separation(API) failed: {e}")
 
@@ -355,6 +343,50 @@ async def render(request: Request, midi: UploadFile = File(...), sf2_name: Optio
     base_url = str(request.base_url).rstrip("/")
     wav_url = f"{base_url}/outputs/{job_id}/render.wav"
     return JSONResponse(content={"status": "done", "wav_url": wav_url, "job_id": job_id})
+
+# --- Async job-based render with progress for sf2 files ---
+def _render_job_runner(job_id: str, job_dir: str, in_mid: str, wav_path: str, sf2_name: Optional[str], quality: str):
+    base_progress = 0.1
+    _write_progress(job_dir, "starting", base_progress)
+    try:
+        # Rendering step
+        _write_progress(job_dir, "rendering", 0.2)
+        render_midi_to_wav(in_mid, wav_path, preferred_bank=sf2_name, quality=quality)
+        # Finished
+        _write_progress(job_dir, "done", 1.0)
+    except Exception as e:
+        _write_progress(job_dir, "error", 1.0, str(e))
+
+@app.post("/render_start")
+async def render_start(request: Request, midi: UploadFile = File(...), sf2_name: Optional[str] = Form(None), quality: str = Form("studio"), preview: Optional[bool] = Form(None)):
+    if midi is None:
+        raise HTTPException(status_code=400, detail="No MIDI uploaded")
+
+    job_id = uuid.uuid4().hex[:8]
+    job_dir = os.path.join(OUTPUTS_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    in_mid = os.path.join(job_dir, "input.mid")
+    with open(in_mid, "wb") as f:
+        shutil.copyfileobj(midi.file, f)
+
+    # Optionally trim for a fast preview
+    if preview:
+        trimmed = os.path.join(job_dir, "input_trimmed.mid")
+        try:
+            trim_midi(in_mid, trimmed, start_sec=0.0, duration_sec=30.0)
+            in_mid = trimmed
+        except Exception as e:
+            print(f"[preview] trim failed, continuing full render: {e}")
+
+    wav_path = os.path.join(job_dir, "render.wav")
+    _write_progress(job_dir, "queued", 0.0)
+
+    t = threading.Thread(target=_render_job_runner, args=(job_id, job_dir, in_mid, wav_path, sf2_name, quality), daemon=True)
+    t.start()
+
+    return JSONResponse(content={"status": "queued", "job_id": job_id})
+
 
 @app.post("/render_sfizz")
 async def render_sfizz(request: Request, midi: UploadFile = File(...), sfz_name: Optional[str] = Form(None), sr: Optional[int] = Form(None)):
@@ -489,9 +521,14 @@ async def job_status(request: Request, job_id: str):
     meta_path = os.path.join(job_dir, "progress.json")
     if not os.path.isdir(job_dir):
         raise HTTPException(status_code=404, detail="job_id not found")
+    
     status = "processing"
     progress = 0.0
     error = None
+    midi_url = None
+    duration_sec = None
+    notes = None
+    
     if os.path.isfile(meta_path):
         try:
             with open(meta_path, "r") as f:
@@ -499,21 +536,41 @@ async def job_status(request: Request, job_id: str):
                 status = d.get("status", status)
                 progress = float(d.get("progress", progress))
                 error = d.get("error")
+                midi_url = d.get("midi_url")
+                duration_sec = d.get("duration_sec")
+                notes = d.get("notes")
         except Exception:
             pass
+    
     response = {"status": status, "progress": progress}
     base_url = str(request.base_url).rstrip("/")
+    
+    # Transcription artifacts
+    if midi_url:
+        response["midi_url"] = f"{base_url}{midi_url}"
+    if duration_sec is not None:
+        response["duration_sec"] = duration_sec
+    if notes is not None:
+        response["notes"] = notes
+    
     # Render job artifact
     wav_path = os.path.join(job_dir, "render_sfizz.wav")
     if status == "done" and os.path.isfile(wav_path):
         response["wav_url"] = f"{base_url}/outputs/{job_id}/render_sfizz.wav"
+    
+    # Also check for regular render.wav (sf2 files)
+    wav_path_sf2 = os.path.join(job_dir, "render.wav")
+    if status == "done" and os.path.isfile(wav_path_sf2):
+        response["wav_url"] = f"{base_url}/outputs/{job_id}/render.wav"
+    
     # Separation artifacts
     inst_path = os.path.join(job_dir, "instrumental.wav")
     voc_path = os.path.join(job_dir, "vocals.wav")
     if os.path.isfile(inst_path):
         response["instrumental_url"] = f"{base_url}/outputs/{job_id}/instrumental.wav"
-    if os.path.isfile(voc_path):
+    if os.path.exists(voc_path):
         response["vocals_url"] = f"{base_url}/outputs/{job_id}/vocals.wav"
+    
     meta_mode = os.path.join(job_dir, "sep_meta.json")
     try:
         if os.path.isfile(meta_mode):
@@ -525,13 +582,24 @@ async def job_status(request: Request, job_id: str):
                     response["fallback_from"] = d.get("fallback_from")
     except Exception:
         pass
+    
     if status == "error" and error:
         response["error"] = error
+    
     return JSONResponse(content=response)
 
 
 def _transcribe_job_runner(job_id: str, job_dir: str, input_path: str, use_demucs: bool):
     midi_path = os.path.join(job_dir, "output.mid")
+    
+    # Write initial progress
+    progress_path = os.path.join(job_dir, "progress.json")
+    try:
+        with open(progress_path, "w") as f:
+            json.dump({"status": "processing", "progress": 0.0}, f)
+    except Exception:
+        pass
+    
     try:
         # Convert to WAV inside the background job to avoid long request times
         original_ext = os.path.splitext(input_path)[1].lower()
@@ -550,10 +618,61 @@ def _transcribe_job_runner(job_id: str, job_dir: str, input_path: str, use_demuc
                     profile = d.get("profile")
             except Exception:
                 pass
-            transcribe_to_midi(wav_path, midi_path, use_demucs=use_demucs, profile=profile)
+            
+            # Update progress to 50%
+            try:
+                with open(progress_path, "w") as f:
+                    json.dump({"status": "processing", "progress": 0.5}, f)
+            except Exception:
+                pass
+            
+            # Run transcription
+            result = transcribe_to_midi(wav_path, midi_path, use_demucs=use_demucs, profile=profile)
+            
+            # Write completion progress with metadata
+            try:
+                with open(progress_path, "w") as f:
+                    json.dump({
+                        "status": "done", 
+                        "progress": 1.0,
+                        "midi_url": f"/outputs/{job_id}/output.mid",
+                        "duration_sec": result.get("duration_sec"),
+                        "notes": result.get("notes")
+                    }, f)
+            except Exception:
+                pass
+                
         except Exception:
-            transcribe_to_midi_pti(wav_path, midi_path, use_demucs=use_demucs)
+            # Fallback to PTI
+            try:
+                with open(progress_path, "w") as f:
+                    json.dump({"status": "processing", "progress": 0.7}, f)
+            except Exception:
+                pass
+            
+            result = transcribe_to_midi_pti(wav_path, midi_path, use_demucs=use_demucs)
+            
+            # Write completion progress with metadata
+            try:
+                with open(progress_path, "w") as f:
+                    json.dump({
+                        "status": "done", 
+                        "progress": 1.0,
+                        "midi_url": f"/outputs/{job_id}/output.mid",
+                        "duration_sec": result.get("duration_sec"),
+                        "notes": result.get("notes")
+                    }, f)
+            except Exception:
+                pass
+                
     except Exception as e:
+        # Write error progress
+        try:
+            with open(progress_path, "w") as f:
+                json.dump({"status": "error", "progress": 0.0, "error": str(e)}, f)
+        except Exception:
+            pass
+        
         try:
             with open(os.path.join(job_dir, "error.txt"), "w") as f:
                 f.write(str(e))
@@ -669,9 +788,7 @@ async def separate_start(file: UploadFile = File(...), mode: Optional[str] = For
         raise HTTPException(status_code=400, detail=f"Failed to decode audio: {e}")
 
     _write_progress(job_dir, "queued", 0.0)
-    t = threading.Thread(target=_separate_job_runner, args=(job_id, job_dir, wav_path, mode, bool(enhance))),
-    # The comma created a tuple; fix by retrieving the thread object
-    t = t[0]
+    t = threading.Thread(target=_separate_job_runner, args=(job_id, job_dir, wav_path, mode, bool(enhance)))
     t.daemon = True
     t.start()
     return JSONResponse(content={"status": "queued", "job_id": job_id})

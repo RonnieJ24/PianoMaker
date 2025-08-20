@@ -24,10 +24,10 @@ struct TranscriptionAPI {
             "use_demucs": useDemucs ? "true" : "false"
         ], boundary: boundary)
 
-        // Increase timeout for long conversions (Demucs + transcription)
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 1200
-        config.timeoutIntervalForResource = 1200
+        // Use reasonable timeouts for conversions
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 60.0   // 1 minute for initial connection
+        config.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
         let session = URLSession(configuration: config)
         let (data, response) = try await session.upload(for: request, from: formData)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -55,16 +55,25 @@ struct TranscriptionAPI {
             struct Queued: Decodable { let status: String; let job_id: String }
             let queuedResp = try JSONDecoder().decode(Queued.self, from: data)
             let jobId = queuedResp.job_id
-            while true {
-                try await Task.sleep(nanoseconds: 900_000_000)
+            
+            let startTime = Date()
+            let maxWaitTime: TimeInterval = 300 // 5 minutes max wait
+            let pollInterval: TimeInterval = 1.0 // Poll every second
+            
+            while Date().timeIntervalSince(startTime) < maxWaitTime {
+                try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
                 let status = try await pollJob(jobId: jobId)
                 if status.status == "done" || (status.instrumental_url != nil || status.vocals_url != nil) {
                     return SeparationResp(status: status.status, job_id: jobId, instrumental_url: status.instrumental_url, vocals_url: status.vocals_url, backend: status.backend, fallback_from: status.fallback_from)
                 }
                 if status.status == "error" {
-                    throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: status.error ?? "Separation failed"])
+                    let errorMsg = status.error ?? "Separation failed"
+                    throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg])
                 }
             }
+            
+            // Timeout reached
+            throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Separation job timed out after 5 minutes. Please check server status."])
         } else {
             return try JSONDecoder().decode(SeparationResp.self, from: data)
         }
@@ -99,9 +108,9 @@ struct TranscriptionAPI {
             "use_demucs": useDemucs ? "true" : "false"
         ], boundary: boundary)
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 1200
-        config.timeoutIntervalForResource = 1200
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 60.0   // 1 minute for initial connection
+        config.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
         let session = URLSession(configuration: config)
         let (data, response) = try await session.upload(for: request, from: formData)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -116,9 +125,9 @@ struct TranscriptionAPI {
     static func poll(jobId: String) async throws -> TranscriptionResponse {
         let url = Config.serverBaseURL.appending(path: "/status/\(jobId)")
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.waitsForConnectivity = true
-        cfg.timeoutIntervalForRequest = 120
-        cfg.timeoutIntervalForResource = 120
+        cfg.waitsForConnectivity = false
+        cfg.timeoutIntervalForRequest = 30.0   // 30 seconds for polling
+        cfg.timeoutIntervalForResource = 60.0  // 1 minute total for polling
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         let session = URLSession(configuration: cfg)
         let (data, response) = try await session.data(from: url)
@@ -129,19 +138,63 @@ struct TranscriptionAPI {
         return try JSONDecoder().decode(TranscriptionResponse.self, from: data)
     }
 
-    static func pollUntilDone(jobId: String, interval: TimeInterval = 1.2, maxMinutes: Double = 30) async throws -> TranscriptionResponse {
-        let deadline = Date().addingTimeInterval(maxMinutes * 60)
-        while Date() < deadline {
-            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-            do {
-                let status = try await poll(jobId: jobId)
-                if status.status == .done { return status }
-            } catch {
-                // Ignore transient poll timeouts and keep polling
+    static func pollUntilDone(jobId: String) async throws -> TranscriptionResponse {
+        let startTime = Date()
+        let maxWaitTime: TimeInterval = 300 // 5 minutes max wait
+        let pollInterval: TimeInterval = 1.0 // Poll every second
+        
+        print("🎵 DEBUG: Starting to poll job: \(jobId)")
+        
+        while Date().timeIntervalSince(startTime) < maxWaitTime {
+            let status = try await pollJob(jobId: jobId)
+            print("🎵 DEBUG: Job \(jobId) status: \(status.status)")
+            
+            switch status.status {
+            case "done":
+                // Job completed, get the final result
+                print("🎵 DEBUG: Job completed, fetching final result...")
+                let finalURL = Config.serverBaseURL.appending(path: "/job/\(jobId)")
+                print("🎵 DEBUG: Fetching from: \(finalURL.absoluteString)")
+                
+                let (data, response) = try await URLSession.shared.data(from: finalURL)
+                print("🎵 DEBUG: Final response data length: \(data.count)")
+                
+                if let responseText = String(data: data, encoding: .utf8) {
+                    print("🎵 DEBUG: Final response body: \(responseText)")
+                }
+                
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    let bodyText = String(data: data, encoding: .utf8) ?? "Server returned status \(http.statusCode)"
+                    print("🎵 DEBUG: HTTP error in final response: \(http.statusCode) - \(bodyText)")
+                    throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: bodyText])
+                }
+                
+                let finalResponse = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+                print("🎵 DEBUG: Decoded final response: \(finalResponse)")
+                return finalResponse
+                
+            case "error":
+                let errorMsg = status.error ?? "Job failed with unknown error"
+                print("🎵 DEBUG: Job failed with error: \(errorMsg)")
+                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg])
+                
+            case "processing", "queued":
+                // Continue polling
+                print("🎵 DEBUG: Job still processing, waiting \(pollInterval)s...")
+                try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+                continue
+                
+            default:
+                // Unknown status, continue polling
+                print("🎵 DEBUG: Unknown status '\(status.status)', continuing to poll...")
+                try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
                 continue
             }
         }
-        throw NSError(domain: "API", code: -1001, userInfo: [NSLocalizedDescriptionKey: "Polling timed out. Please try again."])
+        
+        // Timeout reached
+        print("🎵 DEBUG: Job polling timed out after \(maxWaitTime)s")
+        throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Job timed out after 5 minutes. Please check server status."])
     }
 
     static func transcribeStart(url: URL, useDemucs: Bool, profile: String? = nil) async throws -> QueuedJob {
@@ -154,10 +207,10 @@ struct TranscriptionAPI {
         ]
         if let p = profile, !p.isEmpty { fields["profile"] = p }
         let formData = try makeMultipartBody(fileURL: url, fieldName: "file", fileName: url.lastPathComponent, mimeType: mimeType(for: url), additionalFields: fields, boundary: boundary)
-        let cfg = URLSessionConfiguration.default
-        // Larger timeouts to avoid upload timeouts on big files/simulator
-        cfg.timeoutIntervalForRequest = 600
-        cfg.timeoutIntervalForResource = 600
+        let cfg = URLSessionConfiguration.ephemeral
+        // Reasonable timeouts to prevent hanging
+        cfg.timeoutIntervalForRequest = 60.0   // 1 minute for initial connection
+        cfg.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
         let session = URLSession(configuration: cfg)
         let (data, response) = try await uploadWithRetry(session: session, request: request, body: formData, retries: 3)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -182,40 +235,135 @@ struct TranscriptionAPI {
         try data.write(to: outURL)
         return outURL
     }
+    
+    // Enhanced download with custom filename
+    static func downloadFile(url: URL, filename: String) async throws -> URL {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let bodyText = String(data: data, encoding: .utf8) ?? "Server returned status \(http.statusCode)"
+            throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: bodyText])
+        }
 
-    static func startRenderSFZ(midiData: Data, preview: Bool = true) async throws -> String {
-        var request = URLRequest(url: Config.serverBaseURL.appending(path: "/render_sfizz_start"))
+        let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        .appending(path: "Downloads", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        
+        let outURL = folder.appending(path: filename)
+        try data.write(to: outURL)
+        return outURL
+    }
+    
+    // Download MIDI file with proper filename
+    static func downloadMIDI(from url: URL, originalFilename: String) async throws -> URL {
+        let midiFilename = originalFilename.replacingOccurrences(of: ".mp3", with: ".mid")
+        return try await downloadFile(url: url, filename: midiFilename)
+    }
+    
+    // Download WAV file with proper filename
+    static func downloadWAV(from url: URL, originalFilename: String, type: String = "rendered") async throws -> URL {
+        let wavFilename = originalFilename.replacingOccurrences(of: ".mp3", with: "_\(type).wav")
+        return try await downloadFile(url: url, filename: wavFilename)
+    }
+
+    // SoundFont options for users to choose from
+    enum SoundFont: String, CaseIterable {
+        case fluidR3_GM = "FluidR3_GM.sf2"
+        case generalUser = "GeneralUser_GS_v1.471.sf2"
+        case salamanderGrand = "SalamanderGrandPianoV3.sfz"
+        case salamanderRetuned = "SalamanderGrandPianoV3Retuned.sfz"
+        
+        var description: String {
+            switch self {
+            case .fluidR3_GM:
+                return "General MIDI - Studio quality, all instruments"
+            case .generalUser:
+                return "GeneralUser GS - Better quality than FluidR3, free"
+            case .salamanderGrand:
+                return "Salamander Grand Piano - Rich acoustic piano"
+            case .salamanderRetuned:
+                return "Salamander Retuned - Alternative piano tuning"
+            }
+        }
+        
+        var type: String {
+            switch self {
+            case .fluidR3_GM, .generalUser: return "sf2"
+            case .salamanderGrand, .salamanderRetuned: return "sfz"
+            }
+        }
+        
+        var endpoint: String {
+            switch self {
+            case .fluidR3_GM, .generalUser: return "/render_start"
+            case .salamanderGrand, .salamanderRetuned: return "/render_sfizz_start"
+            }
+        }
+    }
+    
+    static func startRender(midiData: Data, soundFont: SoundFont, preview: Bool = true, quality: String = "studio") async throws -> String {
+        var request = URLRequest(url: Config.serverBaseURL.appending(path: soundFont.endpoint))
         request.httpMethod = "POST"
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
         var body = Data()
         func append(_ s: String) { if let d = s.data(using: .utf8) { body.append(d) } }
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"sr\"\r\n\r\n")
-        append("44100\r\n")
+        
+        // Add quality parameter for FluidSynth (sf2)
+        if soundFont.type == "sf2" {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"quality\"\r\n\r\n")
+            append("\(quality)\r\n")
+        }
+        
+        // Add sample rate for SFizz (sfz)
+        if soundFont.type == "sfz" {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"sr\"\r\n\r\n")
+            append("44100\r\n")
+        }
+        
+        // Add preview parameter for all types
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"preview\"\r\n\r\n")
-        append(preview ? "true\r\n" : "false\r\n")
+        append("\(preview)\r\n")
+        
+        // Add MIDI file
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"midi\"; filename=\"file.mid\"\r\n")
         append("Content-Type: audio/midi\r\n\r\n")
         body.append(midiData)
         append("\r\n--\(boundary)--\r\n")
+        
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 600
         config.timeoutIntervalForResource = 600
         let session = URLSession(configuration: config)
+        
         let (data, response) = try await session.upload(for: request, from: body)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let bodyText = String(data: data, encoding: .utf8) ?? "Server returned status \(http.statusCode)"
             throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: bodyText])
         }
+        
         return try JSONDecoder().decode(QueuedJob.self, from: data).job_id
+    }
+    
+    // Keep the old function for backward compatibility
+    static func startRenderSFZ(midiData: Data, preview: Bool = true) async throws -> String {
+        return try await startRender(midiData: midiData, soundFont: .salamanderGrand, preview: preview)
     }
 
     static func pollRenderJob(jobId: String) async throws -> JobStatus {
         let url = Config.serverBaseURL.appending(path: "/job/\(jobId)")
-        let (data, response) = try await URLSession.shared.data(from: url)
+        
+        // Add timeout to prevent hanging
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10.0 // 10 second timeout for each poll
+        config.timeoutIntervalForResource = 10.0
+        let session = URLSession(configuration: config)
+        
+        let (data, response) = try await session.data(from: url)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let bodyText = String(data: data, encoding: .utf8) ?? "Server returned status \(http.statusCode)"
             throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: bodyText])
@@ -234,12 +382,30 @@ struct TranscriptionAPI {
     }
     static func pollJob(jobId: String) async throws -> SepJobStatus {
         let url = Config.serverBaseURL.appending(path: "/job/\(jobId)")
-        let (data, response) = try await URLSession.shared.data(from: url)
+        print("🎵 DEBUG: Polling job status from: \(url.absoluteString)")
+        
+        // Add timeout to prevent hanging
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10.0 // 10 second timeout for each poll
+        config.timeoutIntervalForResource = 10.0
+        let session = URLSession(configuration: config)
+        
+        let (data, response) = try await session.data(from: url)
+        print("🎵 DEBUG: Job status response data length: \(data.count)")
+        
+        if let responseText = String(data: data, encoding: .utf8) {
+            print("🎵 DEBUG: Job status response body: \(responseText)")
+        }
+        
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let bodyText = String(data: data, encoding: .utf8) ?? "Server returned status \(http.statusCode)"
+            print("🎵 DEBUG: HTTP error polling job: \(http.statusCode) - \(bodyText)")
             throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: bodyText])
         }
-        return try JSONDecoder().decode(SepJobStatus.self, from: data)
+        
+        let status = try JSONDecoder().decode(SepJobStatus.self, from: data)
+        print("🎵 DEBUG: Decoded job status: \(status)")
+        return status
     }
 
     static func ddspMelodyToPiano(url: URL, render: Bool = true) async throws -> MelodyResp {
@@ -248,9 +414,9 @@ struct TranscriptionAPI {
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let formData = try makeMultipartBody(fileURL: url, fieldName: "file", fileName: url.lastPathComponent, mimeType: mimeType(for: url), additionalFields: ["render": render ? "true" : "false"], boundary: boundary)
-        let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 600
-        cfg.timeoutIntervalForResource = 600
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 60.0   // 1 minute for initial connection
+        cfg.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
         let session = URLSession(configuration: cfg)
         let (data, response) = try await session.upload(for: request, from: formData)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -355,9 +521,9 @@ struct TranscriptionAPI {
         // If file is small, normal upload
         if fileData.count < 5_000_000 { // <5MB
             let body = try makeMultipartBody(fileURL: url, fieldName: "file", fileName: url.lastPathComponent, mimeType: mimeType(for: url), additionalFields: fields, boundary: boundary)
-            let cfg = URLSessionConfiguration.default
-            cfg.timeoutIntervalForRequest = 600
-            cfg.timeoutIntervalForResource = 600
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 60.0   // 1 minute for initial connection
+            cfg.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
             let session = URLSession(configuration: cfg)
             return try await uploadWithRetry(session: session, request: request, body: body, retries: 2)
         }
@@ -380,9 +546,9 @@ struct TranscriptionAPI {
             offset = end
         }
         append("\r\n--\(boundary)--\r\n")
-        let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 1200
-        cfg.timeoutIntervalForResource = 1200
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 60.0   // 1 minute for initial connection
+        cfg.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
         let session = URLSession(configuration: cfg)
         return try await uploadWithRetry(session: session, request: request, body: body, retries: 2)
     }
@@ -393,6 +559,7 @@ struct TranscriptionAPI {
         var request = URLRequest(url: Config.serverBaseURL.appending(path: endpoint))
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
         // Create temp file for multipart
         let tmp = FileManager.default.temporaryDirectory.appending(path: "upload_\(UUID().uuidString).bin")
         FileManager.default.createFile(atPath: tmp.path, contents: nil)
@@ -400,6 +567,7 @@ struct TranscriptionAPI {
             throw APIError.badResponse
         }
         defer { try? out.close() }
+        
         func write(_ s: String) throws { if let d = s.data(using: .utf8) { try out.write(contentsOf: d) } }
         for (k, v) in fields {
             try write("--\(boundary)\r\n")
@@ -409,6 +577,7 @@ struct TranscriptionAPI {
         try write("--\(boundary)\r\n")
         try write("Content-Disposition: form-data; name=\"file\"; filename=\"\(url.lastPathComponent)\"\r\n")
         try write("Content-Type: \(mimeType(for: url))\r\n\r\n")
+        
         // Stream the source file into the multipart temp
         let inNeeds = url.startAccessingSecurityScopedResource()
         if let src = try? FileHandle(forReadingFrom: url) {
@@ -421,11 +590,14 @@ struct TranscriptionAPI {
         }
         if inNeeds { url.stopAccessingSecurityScopedResource() }
         try write("\r\n--\(boundary)--\r\n")
-        let cfg = URLSessionConfiguration.default
-        cfg.waitsForConnectivity = true
-        cfg.timeoutIntervalForRequest = 1800
-        cfg.timeoutIntervalForResource = 1800
+        
+        // Use reasonable timeouts to prevent hanging
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 60.0  // 1 minute for initial connection
+        cfg.timeoutIntervalForResource = 300.0 // 5 minutes total for upload
+        cfg.waitsForConnectivity = false      // Don't wait indefinitely for connectivity
         let session = URLSession(configuration: cfg)
+        
         defer { try? FileManager.default.removeItem(at: tmp) }
         return try await session.upload(for: request, fromFile: tmp)
     }
