@@ -17,6 +17,7 @@ struct FullScreenPianoVisualizer: View {
     @State private var displayLink: CADisplayLink?
     @State private var zoomLevel: CGFloat = 1.0
     @State private var isZoomedIn = false
+    @State private var isLoadingMIDI = true
     
     @Environment(\.dismiss) private var dismiss
     
@@ -27,6 +28,7 @@ struct FullScreenPianoVisualizer: View {
         }
         .navigationBarHidden(true)
         .onAppear {
+            print("🎵 FullScreenPianoVisualizer appeared")
             setupAudioPlayer()
             loadMIDINotes()
             startDisplayLink()
@@ -58,8 +60,36 @@ struct FullScreenPianoVisualizer: View {
             navigationBarView
             transportControlsView
             timeDisplayView
-            pianoAndMidiView
+            
+            if isLoadingMIDI {
+                loadingView
+            } else {
+                pianoAndMidiView
+            }
         }
+    }
+    
+    private var loadingView: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            
+            ProgressView()
+                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                .scaleEffect(2.0)
+            
+            Text("Loading Piano Visualizer...")
+                .font(.title2)
+                .foregroundColor(.white)
+                .fontWeight(.medium)
+            
+            Text("Processing MIDI data for visualization")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.7))
+            
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.8))
     }
     
     private var navigationBarView: some View {
@@ -322,22 +352,48 @@ struct FullScreenPianoVisualizer: View {
             ZStack {
                 GridBackgroundView()
                 
-                ForEach(Array(midiNotes.enumerated()), id: \.offset) { index, note in
-                    let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
-                    
-                    let timeProgress = (currentTime - note.start + 6) / 6.0
-                    let x = geometry.size.width * (1.0 - timeProgress)
-                    
-                    let noteIndex = 108 - note.pitch
-                    let keyHeight = geometry.size.height / 88.0
-                    let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
-                    
-                    if x > -100 && x < geometry.size.width + 100 && y >= 0 && y <= geometry.size.height && timeProgress >= 0 && timeProgress <= 1.0 && currentTime <= note.start + note.duration + 3.0 {
-                        FallingNoteView(
-                            note: note,
-                            isActive: isActive,
-                            position: CGPoint(x: x, y: y)
-                        )
+                if isLoadingMIDI {
+                    // Loading indicator
+                    VStack {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.5)
+                        Text("Loading MIDI...")
+                            .foregroundColor(.white)
+                            .font(.caption)
+                            .padding(.top, 8)
+                    }
+                } else if midiNotes.isEmpty {
+                    // No notes indicator
+                    VStack {
+                        Image(systemName: "music.note")
+                            .font(.system(size: 40))
+                            .foregroundColor(.white.opacity(0.5))
+                        Text("No MIDI notes found")
+                            .foregroundColor(.white.opacity(0.7))
+                            .font(.caption)
+                            .padding(.top, 8)
+                    }
+                } else {
+                    // MIDI notes
+                    ForEach(Array(midiNotes.enumerated()), id: \.offset) { index, note in
+                        let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
+                        
+                        let timeProgress = (currentTime - note.start + 6) / 6.0
+                        let x = geometry.size.width * (1.0 - timeProgress)
+                        
+                        // Calculate Y position to match piano keys exactly
+                        let noteIndex = 108 - note.pitch
+                        let keyHeight: CGFloat = 12.0 // Match the piano key height
+                        let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
+                        
+                        if x > -100 && x < geometry.size.width + 100 && y >= 0 && y <= geometry.size.height && timeProgress >= 0 && timeProgress <= 1.0 && currentTime <= note.start + note.duration + 3.0 {
+                            FallingNoteView(
+                                note: note,
+                                isActive: isActive,
+                                position: CGPoint(x: x, y: y)
+                            )
+                        }
                     }
                 }
             }
@@ -450,36 +506,47 @@ struct FullScreenPianoVisualizer: View {
     }
     
     private func loadMIDINotes() {
+        isLoadingMIDI = true
+        
         guard let midiURL = midiURL else {
             print("🎵 ERROR: No MIDI URL provided, using sample notes")
             loadSampleNotes()
+            isLoadingMIDI = false
             return
         }
         
         print("🎵 Loading MIDI notes from: \(midiURL)")
         
-        // Try to load actual MIDI file
-        do {
-            let midiData = try Data(contentsOf: midiURL)
-            print("🎵 MIDI file loaded, size: \(midiData.count) bytes")
-            
-            // Parse MIDI file and extract notes
-            let loadedNotes = try parseMIDIFile(data: midiData)
-            
-            if !loadedNotes.isEmpty {
-                midiNotes = loadedNotes
-                // Calculate duration from the last note
-                if let lastNote = loadedNotes.max(by: { $0.start + $0.duration < $1.start + $1.duration }) {
-                    duration = lastNote.start + lastNote.duration + 2.0 // Add 2 second buffer
+        // Use DispatchQueue to avoid blocking the UI
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let midiData = try Data(contentsOf: midiURL)
+                print("🎵 MIDI file loaded, size: \(midiData.count) bytes")
+                
+                // Parse MIDI file and extract notes
+                let loadedNotes = try self.parseMIDIFile(data: midiData)
+                
+                DispatchQueue.main.async {
+                    if !loadedNotes.isEmpty {
+                        self.midiNotes = loadedNotes
+                        // Calculate duration from the last note
+                        if let lastNote = loadedNotes.max(by: { $0.start + $0.duration < $1.start + $1.duration }) {
+                            self.duration = lastNote.start + lastNote.duration + 2.0 // Add 2 second buffer
+                        }
+                        print("🎵 Loaded \(loadedNotes.count) MIDI notes, duration: \(self.duration)s")
+                    } else {
+                        print("🎵 WARNING: No notes found in MIDI file, using sample notes")
+                        self.loadSampleNotes()
+                    }
+                    self.isLoadingMIDI = false
                 }
-                print("🎵 Loaded \(loadedNotes.count) MIDI notes, duration: \(duration)s")
-            } else {
-                print("🎵 WARNING: No notes found in MIDI file, using sample notes")
-                loadSampleNotes()
+            } catch {
+                print("🎵 ERROR loading MIDI file: \(error), using sample notes")
+                DispatchQueue.main.async {
+                    self.loadSampleNotes()
+                    self.isLoadingMIDI = false
+                }
             }
-        } catch {
-            print("🎵 ERROR loading MIDI file: \(error), using sample notes")
-            loadSampleNotes()
         }
     }
     
