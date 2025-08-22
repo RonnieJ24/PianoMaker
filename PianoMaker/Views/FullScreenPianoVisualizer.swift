@@ -2,7 +2,6 @@ import SwiftUI
 import AVFoundation
 import AudioToolbox
 import AudioToolbox.MusicPlayer
-import SwiftUI.Canvas
 
 struct FullScreenPianoVisualizer: View {
     // MARK: - Constants for Perfect Alignment
@@ -417,9 +416,9 @@ struct FullScreenPianoVisualizer: View {
                             return (currentTime >= noteStartTime - visibleTimeWindow && currentTime <= noteEndTime + 2.0)
                         }
                         
-                        // Use Canvas for high-performance note rendering
-                        Canvas { context, size in
-                            for note in visibleNotes {
+                        // High-performance note rendering using optimized SwiftUI
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(visibleNotes.enumerated()), id: \.offset) { index, note in
                                 let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
                                 
                                 // Calculate X position based on time progression
@@ -431,10 +430,10 @@ struct FullScreenPianoVisualizer: View {
                                 let x: CGFloat = {
                                     if timeFromStart < 0 {
                                         // Note hasn't started yet - position on right
-                                        return size.width - (abs(timeFromStart) / totalVisibleTime) * size.width
+                                        return geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
                                     } else if timeFromStart <= noteDuration {
                                         // Note is playing - move from right to left
-                                        return size.width - (timeFromStart / totalVisibleTime) * size.width
+                                        return geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
                                     } else {
                                         // Note has finished - position on left
                                         return 0
@@ -446,37 +445,24 @@ struct FullScreenPianoVisualizer: View {
                                 let y = (CGFloat(noteIndex) * Self.pianoKeyHeight) + (Self.pianoKeyHeight / 2.0)
                                 
                                 // Only render if note is in visible area
-                                if x >= -50 && x <= size.width + 50 && y >= 0 && y <= size.height {
-                                    // Create note rectangle
-                                    let noteRect = CGRect(
-                                        x: x - 30, // Center the note
-                                        y: y - 6,  // Center vertically on key
-                                        width: 60,
-                                        height: 12
-                                    )
-                                    
-                                    // Fill with gradient based on active state
-                                    let colors = isActive ? 
-                                        [Color.orange, Color.red, Color.yellow] : 
-                                        [Color.blue.opacity(0.7), Color.cyan.opacity(0.7)]
-                                    
-                                    context.fill(
-                                        Path(noteRect),
-                                        with: .linearGradient(
-                                            Gradient(colors: colors),
-                                            startPoint: CGPoint(x: noteRect.minX, y: noteRect.minY),
-                                            endPoint: CGPoint(x: noteRect.maxX, y: noteRect.maxY)
-                                        )
-                                    )
-                                    
-                                    // Add glow effect for active notes
-                                    if isActive {
-                                        context.blendMode = .plusLighter
-                                        context.fill(
-                                            Path(noteRect.insetBy(dx: -2, dy: -2)),
-                                            with: .color(.orange.opacity(0.3))
-                                        )
-                                        context.blendMode = .normal
+                                Group {
+                                    if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
+                                        // Optimized note view
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: isActive ? 
+                                                        [Color.orange, Color.red, Color.yellow] : 
+                                                        [Color.blue.opacity(0.7), Color.cyan.opacity(0.7)],
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                            .frame(width: 60, height: 12)
+                                            .shadow(color: isActive ? .orange : .blue, radius: isActive ? 8 : 4)
+                                            .scaleEffect(isActive ? 1.2 : 1.0)
+                                            .animation(.easeInOut(duration: 0.2), value: isActive)
+                                            .position(x: x, y: y)
                                     }
                                 }
                             }
