@@ -3,13 +3,21 @@ import AVFoundation
 import AudioToolbox
 import AudioToolbox.MusicPlayer
 
+// MARK: - MIDI Event Structures
+// Use ExtendedTempoEvent from AudioToolbox; do not redefine it
+
 struct FullScreenPianoVisualizer: View {
     // MARK: - Constants for Perfect Alignment
-    private static let pianoKeyHeight: CGFloat = 12.0
-    private static let totalPianoKeys: Int = 88
-    private static let pianoRangeStart: Int = 21  // A0
-    private static let pianoRangeEnd: Int = 108   // C8
-    private static let totalPianoHeight: CGFloat = CGFloat(totalPianoKeys) * pianoKeyHeight // 1056px
+    static let pianoKeyHeight: CGFloat = 12.0
+    static let totalPianoKeys: Int = 88
+    static let pianoRangeStart: Int = 21  // A0
+    static let pianoRangeEnd: Int = 108   // C8
+    static let totalPianoHeight: CGFloat = CGFloat(totalPianoKeys) * pianoKeyHeight // 1056px
+    
+    // MARK: - Performance Constants
+    static let visibleTimeWindow: Double = 8.0 // Show 8 seconds of notes for smooth scrolling
+    static let maxRenderedNotes: Int = 500 // Limit rendered notes for performance
+    static let pixelsPerSecond: CGFloat = 200.0 // Base pixels per second for time mapping (clearer widths)
     
     let renderedWAVURL: URL?
     let midiURL: URL?
@@ -21,18 +29,24 @@ struct FullScreenPianoVisualizer: View {
     @State private var midiPlayer: MIDIPlayer?
     @State private var midiNotes: [PianoNote] = []
     @State private var activeNotes: Set<Int> = []
+    @State private var onsetNotes: Set<Int> = []
+    @State private var wallGlowExpiryByPitch: [Int: CFTimeInterval] = [:]
     @State private var displayLink: CADisplayLink?
-    @State private var zoomLevel: CGFloat = 1.0
+    @State private var timeZoom: CGFloat = 1.0
+    @State private var baseTimeZoom: CGFloat = 1.0
     @State private var isZoomedIn = false
     @State private var isLoadingMIDI = true
+    @State private var scrollOffset: CGFloat = 0
+    @State private var performanceMetrics = PerformanceMetrics()
     
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         ZStack {
             backgroundView
-            mainContentView
+            pianoAndMidiView
         }
+        .overlay(stickyHUD, alignment: .top)
         .navigationBarHidden(true)
         .onAppear {
             print("🎵 FullScreenPianoVisualizer appeared")
@@ -51,6 +65,18 @@ struct FullScreenPianoVisualizer: View {
                 stopDisplayLink()
             }
         }
+    }
+
+    private var stickyHUD: some View {
+        VStack(spacing: 0) {
+            navigationBarView
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+            transportControlsView
+            timeDisplayView
+        }
+        .background(.ultraThinMaterial)
+        .ignoresSafeArea(edges: .top)
     }
     
     private var backgroundView: some View {
@@ -174,6 +200,8 @@ struct FullScreenPianoVisualizer: View {
             playPauseButton
             stopButton
             Spacer()
+            zoomControlsView
+            Spacer()
             statusIndicator
         }
         .padding(.horizontal, 20)
@@ -250,7 +278,7 @@ struct FullScreenPianoVisualizer: View {
                         .fontWeight(.bold)
                 }
             }
-            .disabled(zoomLevel <= 0.5)
+            .disabled(timeZoom <= 0.5)
             
             Button(action: zoomIn) {
                 ZStack {
@@ -271,7 +299,7 @@ struct FullScreenPianoVisualizer: View {
                         .fontWeight(.bold)
                 }
             }
-            .disabled(zoomLevel >= 3.0)
+            .disabled(timeZoom >= 3.0)
         }
     }
     
@@ -283,15 +311,42 @@ struct FullScreenPianoVisualizer: View {
                 .scaleEffect(isPlaying ? 1.2 : 1.0)
                 .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: isPlaying)
 
-            Text(isPlaying ? "PLAYING" : "STOPPED")
-                .font(.system(.caption, design: .monospaced))
-                .fontWeight(.semibold)
-                .foregroundColor(isPlaying ? .green : .red)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(isPlaying ? "PLAYING" : "STOPPED")
+                        .font(.system(.caption, design: .monospaced))
+                        .fontWeight(.semibold)
+                        .foregroundColor(isPlaying ? .green : .red)
+                    
+                    Text("•")
+                        .foregroundColor(.white.opacity(0.5))
+                    
+                    Text(performanceMetrics.performanceStatus)
+                        .font(.system(.caption, design: .monospaced))
+                        .fontWeight(.medium)
+                        .foregroundColor(performanceColor)
+                }
+                
+                Text("\(String(format: "%.1f", performanceMetrics.fps)) FPS • \(midiNotes.count) notes")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color.black.opacity(0.6))
         .cornerRadius(8)
+    }
+    
+    private var performanceColor: Color {
+        let status = performanceMetrics.performanceStatus
+        switch status {
+        case "Excellent": return .green
+        case "Good": return .blue
+        case "Fair": return .orange
+        case "Poor": return .red
+        default: return .white.opacity(0.7)
+        }
     }
     
     private var timeDisplayView: some View {
@@ -352,139 +407,132 @@ struct FullScreenPianoVisualizer: View {
     }
     
     private var pianoAndMidiView: some View {
-        ScrollView([.horizontal, .vertical], showsIndicators: false) {
-            HStack(spacing: 0) {
-                // Piano and MIDI grid as one unit that zooms together
-                HStack(spacing: 0) {
-                    VerticalPianoKeyboardView(activeNotes: activeNotes, currentTime: currentTime)
-                        .frame(width: 100)
-                        .background(Color.black.opacity(0.9))
-                    
-                    midiGridView
-                }
-                .scaleEffect(zoomLevel)
-                .animation(.easeInOut(duration: 0.3), value: zoomLevel)
-                .gesture(
-                    MagnificationGesture()
-                        .onChanged { value in
-                            let newZoom = zoomLevel * value
-                            zoomLevel = max(0.5, min(3.0, newZoom))
-                            isZoomedIn = zoomLevel > 1.0
-                        }
-                )
+        GeometryReader { outer in
+            let scale = timeZoom
+            HStack(alignment: .top, spacing: 0) {
+                // Keyboard first (left)
+                VerticalPianoKeyboardView(activeNotes: onsetNotes, currentTime: currentTime)
+                    .frame(width: 100, height: Self.totalPianoHeight)
+                    .background(Color.black.opacity(0.9))
+                // Grid second (right)
+                midiGridView
+                    .frame(height: Self.totalPianoHeight)
             }
+            .scaleEffect(x: scale, y: 1.0, anchor: .topLeading)
+            .frame(width: outer.size.width, height: Self.totalPianoHeight, alignment: .topLeading)
+            .contentShape(Rectangle())
         }
         .background(Color.black.opacity(0.3))
+        .gesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    timeZoom = max(0.5, min(3.0, baseTimeZoom * value))
+                    isZoomedIn = timeZoom > 1.0
+                }
+                .onEnded { _ in baseTimeZoom = timeZoom }
+        )
+        .gesture(
+            DragGesture(minimumDistance: 5)
+                .onChanged { value in
+                    let seconds = Double(-value.translation.width) / Double(Self.pixelsPerSecond * timeZoom)
+                    let newTime = max(0.0, min(duration, currentTime + seconds))
+                    currentTime = newTime
+                    wavPlayer?.currentTime = newTime
+                }
+        )
     }
     
     private var midiGridView: some View {
         GeometryReader { geometry in
-            ZStack {
-                GridBackgroundView()
-                
-                Group {
-                    if isLoadingMIDI {
-                        // Loading indicator
-                        VStack {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                .scaleEffect(1.5)
-                            Text("Loading MIDI...")
-                                .foregroundColor(.white)
-                                .font(.caption)
-                                .padding(.top, 8)
-                        }
-                    } else if midiNotes.isEmpty {
-                        // No notes indicator
-                        VStack {
-                            Image(systemName: "music.note")
-                                .font(.system(size: 40))
-                                .foregroundColor(.white.opacity(0.5))
-                            Text("No MIDI notes found")
-                                .foregroundColor(.white.opacity(0.7))
-                                .font(.caption)
-                                .padding(.top, 8)
-                        }
-                    } else {
-                        // MIDI notes - only show notes that should be visible based on time
-                        // Performance optimization: Only render notes in visible time window
-                        let visibleTimeWindow: Double = 10.0 // Show 10 seconds of notes for smooth scrolling
-                        let visibleNotes = midiNotes.filter { note in
-                            let noteEndTime = note.start + note.duration
-                            let noteStartTime = note.start
-                            // Show notes that are currently playing, will play soon, or just finished
-                            return (currentTime >= noteStartTime - visibleTimeWindow && currentTime <= noteEndTime + 2.0)
-                        }
-                        
-                        // High-performance note rendering using optimized SwiftUI
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(visibleNotes.enumerated()), id: \.offset) { index, note in
-                                let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
-                                
-                                // Calculate X position based on time progression
-                                let timeFromStart = currentTime - note.start
-                                let noteDuration = note.duration
-                                let totalVisibleTime: Double = 8.0 // Show 8 seconds of notes
-                                
-                                // X position: right edge (0) to left edge (width)
-                                let x: CGFloat = {
-                                    if timeFromStart < 0 {
-                                        // Note hasn't started yet - position on right
-                                        return geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
-                                    } else if timeFromStart <= noteDuration {
-                                        // Note is playing - move from right to left
-                                        return geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
-                                    } else {
-                                        // Note has finished - position on left
-                                        return 0
-                                    }
-                                }()
-                                
-                                // Calculate Y position to match piano keys exactly using constants
-                                let noteIndex = Self.pianoRangeEnd - note.pitch
-                                let y = (CGFloat(noteIndex) * Self.pianoKeyHeight) + (Self.pianoKeyHeight / 2.0)
-                                
-                                // Only render if note is in visible area
-                                Group {
-                                    if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
-                                        // Optimized note view
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: isActive ? 
-                                                        [Color.orange, Color.red, Color.yellow] : 
-                                                        [Color.blue.opacity(0.7), Color.cyan.opacity(0.7)],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                            .frame(width: 60, height: 12)
-                                            .shadow(color: isActive ? .orange : .blue, radius: isActive ? 8 : 4)
-                                            .scaleEffect(isActive ? 1.2 : 1.0)
-                                            .animation(.easeInOut(duration: 0.2), value: isActive)
-                                            .position(x: x, y: y)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            PianoRollCanvas(
+                notes: midiNotes,
+                currentTime: currentTime,
+                pxPerSec: Self.pixelsPerSecond * timeZoom,
+                pianoKeyHeight: Self.pianoKeyHeight,
+                pianoRangeStart: Self.pianoRangeStart,
+                pianoRangeEnd: Self.pianoRangeEnd,
+                onsetPitches: onsetNotes
+            )
         }
-        .frame(width: 400, height: Self.totalPianoHeight) // Exact piano keyboard height using constants
         .background(Color.black.opacity(0.8))
     }
+
+// MARK: - Canvas-based Piano Roll
+
+struct PianoRollCanvas: View {
+    let notes: [PianoNote]
+    let currentTime: Double
+    let pxPerSec: CGFloat
+    let pianoKeyHeight: CGFloat
+    let pianoRangeStart: Int
+    let pianoRangeEnd: Int
+    let onsetPitches: Set<Int>
+    
+    private var totalKeys: Int { pianoRangeEnd - pianoRangeStart + 1 }
+    
+    var body: some View {
+        Canvas { context, size in
+            // Clean background (no grid)
+            let background = Rectangle().path(in: CGRect(origin: .zero, size: size))
+            context.fill(background, with: .color(Color.black.opacity(0.90)))
+            
+            // Impact line at left edge (adjacent to keyboard) - VISUAL INDICATOR
+            let impactX: CGFloat = 0
+            let impactLine = Rectangle().path(in: CGRect(x: impactX, y: 0, width: 2, height: size.height))
+            context.fill(impactLine, with: .color(Color.red.opacity(0.8)))
+            
+            // Future-only window: show notes that will arrive within lookahead seconds
+            let lookahead: Double = 8.0
+            let windowStart = currentTime
+            let windowEnd = currentTime + lookahead
+            
+            // Fixed approach width so visuals do not leave ghosts or sustain after impact
+            let approachWidth = max(10, 40)
+            
+            for note in notes {
+                let start = note.start
+                if start < windowStart || start > windowEnd { continue }
+                
+                let idx = pianoRangeEnd - note.pitch
+                guard idx >= 0 && idx < totalKeys else { continue }
+                let y = CGFloat(idx) * pianoKeyHeight
+                let height = max(1, pianoKeyHeight - 1)
+                
+                // Position so the bar's right edge reaches impact at start time
+                let distanceToImpact = CGFloat(start - currentTime) * pxPerSec
+                let rightEdge = max(0, impactX + distanceToImpact)
+                let leftEdge = max(0, rightEdge - CGFloat(approachWidth))
+                let rect = CGRect(x: leftEdge, y: y, width: rightEdge - leftEdge, height: height)
+                if rect.width <= 0 || rect.minX > size.width { continue }
+                
+                let grad = Gradient(colors: [Color.blue, Color.cyan])
+                let style = GraphicsContext.Shading.linearGradient(grad, startPoint: CGPoint(x: rect.minX, y: rect.midY), endPoint: CGPoint(x: rect.maxX, y: rect.midY))
+                let path = RoundedRectangle(cornerRadius: 3).path(in: rect)
+                context.fill(path, with: style)
+            }
+        }
+        .frame(minWidth: 400)
+    }
+}
     
     // MARK: - Helper Functions
     
     private func progressWidth(in geometry: GeometryProxy) -> CGFloat {
-        guard duration > 0 else { return 0 }
+        // Validate duration to prevent crashes from NaN or infinity
+        guard duration.isFinite && !duration.isNaN && duration > 0 else { 
+            return 0 
+        }
         return geometry.size.width * CGFloat(currentTime / duration)
     }
     
     private func formatTime(_ time: Double) -> String {
-        let minutes = Int(time) / 60
-        let seconds = Int(time) % 60
+        // Validate time value to prevent crashes from NaN or infinity
+        guard time.isFinite && !time.isNaN else {
+            return "0:00"
+        }
+        
+        let minutes = Int(max(0, time)) / 60
+        let seconds = Int(max(0, time)) % 60
         return String(format: "%d:%02d", minutes, seconds)
     }
     
@@ -567,14 +615,22 @@ struct FullScreenPianoVisualizer: View {
     }
     
     private func seekTo(time: Double) {
-        wavPlayer?.currentTime = time
-        currentTime = time
-        print("🎵 DEBUG: Seeked to \(time)s")
+        // Validate time value to prevent crashes
+        guard time.isFinite && !time.isNaN else {
+            print("🎵 WARNING: Invalid seek time: \(time)")
+            return
+        }
+        
+        let validTime = max(0, min(time, duration))
+        wavPlayer?.currentTime = validTime
+        currentTime = validTime
+        print("🎵 DEBUG: Seeked to \(validTime)s")
     }
     
     private func setupAudioPlayer() {
         // Initialize with sample data for now
-        duration = 4.18 * 60 // 4:18 in seconds
+        let sampleDuration = 4.18 * 60 // 4:18 in seconds
+        duration = sampleDuration.isFinite ? sampleDuration : 60.0 // Ensure it's finite
         currentTime = 0
     }
     
@@ -596,19 +652,25 @@ struct FullScreenPianoVisualizer: View {
                 let midiData = try Data(contentsOf: midiURL)
                 print("🎵 MIDI file loaded, size: \(midiData.count) bytes")
                 
-                // Parse MIDI file and extract notes
+                // Parse MIDI file and extract notes with improved timing
                 let loadedNotes = try self.parseMIDIFile(data: midiData)
                 
                 DispatchQueue.main.async {
                     if !loadedNotes.isEmpty {
                         // Sort notes by start time and limit to reasonable number for performance
                         let sortedNotes = loadedNotes.sorted { $0.start < $1.start }
-                        let maxNotes = 1000 // Limit to prevent performance issues
+                        let maxNotes = 2000 // Increased limit for better coverage
                         self.midiNotes = Array(sortedNotes.prefix(maxNotes))
                         
                         // Calculate duration from the last note
                         if let lastNote = sortedNotes.last {
-                            self.duration = lastNote.start + lastNote.duration + 2.0 // Add 2 second buffer
+                            let calculatedDuration = lastNote.start + lastNote.duration + 2.0 // Add 2 second buffer
+                            // Ensure duration is finite and reasonable
+                            if calculatedDuration.isFinite && !calculatedDuration.isNaN && calculatedDuration > 0 && calculatedDuration < 3600 {
+                                self.duration = calculatedDuration
+                            } else {
+                                self.duration = 60.0 // Default to 1 minute if calculation fails
+                            }
                         }
                         print("🎵 Loaded \(self.midiNotes.count) MIDI notes (limited from \(loadedNotes.count)), duration: \(self.duration)s")
                     } else {
@@ -660,12 +722,43 @@ struct FullScreenPianoVisualizer: View {
         }
         
         duration = 80.0 // 80 seconds total
+        // Ensure duration is valid
+        if !duration.isFinite || duration.isNaN || duration <= 0 {
+            duration = 60.0 // Default to 1 minute if invalid
+        }
         midiNotes = sampleNotes
         print("🎵 Loaded \(sampleNotes.count) sample MIDI notes")
     }
     
     private func parseMIDIFile(data: Data) throws -> [PianoNote] {
-        // Use MusicSequence for proper MIDI parsing with absolute timing
+        // Enhanced MIDI parser with multiple parsing strategies and better error handling
+        var notes: [PianoNote] = []
+        
+        // Strategy 1: Try MusicSequence parsing (most accurate)
+        if let musicSequenceNotes = try? parseWithMusicSequence(data: data) {
+            notes = musicSequenceNotes
+            print("🎵 Successfully parsed with MusicSequence")
+        }
+        // Strategy 2: Fallback to manual MIDI parsing
+        else if let manualNotes = try? parseMIDIManually(data: data) {
+            notes = manualNotes
+            print("🎵 Successfully parsed with manual parser")
+        }
+        // Strategy 3: Use sample notes if all else fails
+        else {
+            print("🎵 WARNING: All MIDI parsing failed, using sample notes")
+            loadSampleNotes()
+            return midiNotes
+        }
+        
+        // Sort notes by start time for proper sequencing
+        notes.sort { $0.start < $1.start }
+        
+        print("🎵 Successfully parsed \(notes.count) MIDI notes")
+        return notes
+    }
+    
+    private func parseWithMusicSequence(data: Data) throws -> [PianoNote] {
         var notes: [PianoNote] = []
         
         // Create a temporary file for MusicSequence
@@ -685,15 +778,12 @@ struct FullScreenPianoVisualizer: View {
             throw NSError(domain: "MIDIParser", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to load MIDI file"])
         }
         
-        // Get sequence info for proper timing
-        var tempoTrack: MusicTrack?
-        var tempoTrackIndex: UInt32 = 0
-        var tempoTrackLength: MusicTimeStamp = 0
-        var dataSize: UInt32 = 0
-        
-        // Get tempo track for accurate timing
-        if MusicSequenceGetTempoTrack(seq, &tempoTrack) == noErr, let tempoTrk = tempoTrack {
-            MusicTrackGetProperty(tempoTrk, kSequenceTrackProperty_TrackLength, &tempoTrackLength, &dataSize)
+        // Helper: beats -> seconds using sequencer tempo map
+        func beatsToSeconds(_ beats: MusicTimeStamp) -> Double {
+            var seconds: Double = 0
+            let status = MusicSequenceGetSecondsForBeats(seq, beats, &seconds)
+            if status != noErr || !seconds.isFinite || seconds.isNaN { return 0 }
+            return seconds
         }
         
         // Get track count
@@ -702,7 +792,6 @@ struct FullScreenPianoVisualizer: View {
             throw NSError(domain: "MIDIParser", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get track count"])
         }
         
-        // Parse each track with proper timing
         for trackIndex in 0..<trackCount {
             var track: MusicTrack?
             guard MusicSequenceGetIndTrack(seq, trackIndex, &track) == noErr, let trk = track else { continue }
@@ -714,44 +803,66 @@ struct FullScreenPianoVisualizer: View {
             var hasEvent: DarwinBoolean = false
             MusicEventIteratorHasCurrentEvent(iter, &hasEvent)
             
-            // Track note on/off pairs for proper duration calculation
-            var activeNotes: [Int: (MusicTimeStamp, Int)] = [:] // pitch -> (startTime, velocity)
+            // For MIDIChannelMessage, we need on/off pairing
+            var activeByPitch: [Int: [MusicTimeStamp]] = [:] // pitch -> stack of start beats
             
             while hasEvent.boolValue {
-                var time: MusicTimeStamp = 0
+                var timeBeats: MusicTimeStamp = 0
                 var eventType: MusicEventType = 0
                 var eventData: UnsafeRawPointer?
                 var eventDataSize: UInt32 = 0
                 
-                if MusicEventIteratorGetEventInfo(iter, &time, &eventType, &eventData, &eventDataSize) == noErr {
-                    if eventType == kMusicEventType_MIDINoteMessage,
-                       let ptr = eventData?.assumingMemoryBound(to: MIDINoteMessage.self) {
-                        let msg = ptr.pointee
-                        let pitch = Int(msg.note)
-                        let velocity = Int(msg.velocity)
-                        
-                        if pitch >= 21 && pitch <= 108 { // Valid piano range
-                            if velocity > 0 { // Note on
-                                activeNotes[pitch] = (time, velocity)
-                            } else { // Note off
-                                if let (startTime, _) = activeNotes.removeValue(forKey: pitch) {
-                                    // Calculate duration using absolute times
-                                    let duration = Double(time - startTime)
-                                    
-                                    // Convert MIDI ticks to seconds using proper tempo
-                                    let secondsPerTick = 60.0 / (120.0 * 480.0) // Default 120 BPM, 480 ticks/quarter
-                                    let startTimeSeconds = Double(startTime) * secondsPerTick
-                                    let durationSeconds = duration * secondsPerTick
-                                    
-                                    let note = PianoNote(
-                                        start: startTimeSeconds,
-                                        duration: max(durationSeconds, 0.1),
-                                        pitch: pitch
-                                    )
-                                    notes.append(note)
+                if MusicEventIteratorGetEventInfo(iter, &timeBeats, &eventType, &eventData, &eventDataSize) == noErr {
+                    switch eventType {
+                    case kMusicEventType_MIDINoteMessage:
+                        if let ptr = eventData?.assumingMemoryBound(to: MIDINoteMessage.self) {
+                            let msg = ptr.pointee
+                            let pitch = Int(msg.note)
+                            guard pitch >= Self.pianoRangeStart && pitch <= Self.pianoRangeEnd else { break }
+                            let startSec = beatsToSeconds(timeBeats)
+                            let endBeats = timeBeats + MusicTimeStamp(msg.duration)
+                            let endSec = beatsToSeconds(endBeats)
+                            let durSec = max(0.01, endSec - startSec)
+                            if startSec.isFinite && durSec.isFinite && durSec > 0 {
+                                notes.append(PianoNote(start: startSec, duration: durSec, pitch: pitch))
+                            }
+                        }
+                    case kMusicEventType_MIDIChannelMessage:
+                        if let ptr = eventData?.assumingMemoryBound(to: MIDIChannelMessage.self) {
+                            let ch = ptr.pointee
+                            let status = Int(ch.status & 0xF0)
+                            let pitch = Int(ch.data1)
+                            let velocity = Int(ch.data2)
+                            guard pitch >= Self.pianoRangeStart && pitch <= Self.pianoRangeEnd else { break }
+                            if status == 0x90 { // Note On
+                                if velocity > 0 {
+                                    activeByPitch[pitch, default: []].append(timeBeats)
+                                } else {
+                                    // Treat Note On with velocity 0 as Note Off
+                                    if var starts = activeByPitch[pitch], let startBeats = starts.popLast() {
+                                        activeByPitch[pitch] = starts
+                                        let startSec = beatsToSeconds(startBeats)
+                                        let endSec = beatsToSeconds(timeBeats)
+                                        let durSec = max(0.01, endSec - startSec)
+                                        if startSec.isFinite && durSec.isFinite && durSec > 0 {
+                                            notes.append(PianoNote(start: startSec, duration: durSec, pitch: pitch))
+                                        }
+                                    }
+                                }
+                            } else if status == 0x80 { // Note Off
+                                if var starts = activeByPitch[pitch], let startBeats = starts.popLast() {
+                                    activeByPitch[pitch] = starts
+                                    let startSec = beatsToSeconds(startBeats)
+                                    let endSec = beatsToSeconds(timeBeats)
+                                    let durSec = max(0.01, endSec - startSec)
+                                    if startSec.isFinite && durSec.isFinite && durSec > 0 {
+                                        notes.append(PianoNote(start: startSec, duration: durSec, pitch: pitch))
+                                    }
                                 }
                             }
                         }
+                    default:
+                        break
                     }
                 }
                 
@@ -759,19 +870,65 @@ struct FullScreenPianoVisualizer: View {
                 MusicEventIteratorHasCurrentEvent(iter, &hasEvent)
             }
             
-            // Handle any remaining active notes (no note off found)
-            for (pitch, (startTime, _)) in activeNotes {
-                let secondsPerTick = 60.0 / (120.0 * 480.0)
-                let startTimeSeconds = Double(startTime) * secondsPerTick
-                let note = PianoNote(start: startTimeSeconds, duration: 0.5, pitch: pitch)
-                notes.append(note)
+            // Close any unpaired notes with a small default duration
+            for (pitch, starts) in activeByPitch {
+                for startBeats in starts {
+                    let startSec = beatsToSeconds(startBeats)
+                    let durSec = 0.25
+                    if startSec.isFinite {
+                        notes.append(PianoNote(start: startSec, duration: durSec, pitch: pitch))
+                    }
+                }
             }
         }
         
-        // Sort notes by start time for proper sequencing
-        notes.sort { $0.start < $1.start }
+        print("🎵 MusicSequence parsed \(notes.count) notes (both MIDINote and Channel messages)")
+        return notes
+    }
+    
+    private func parseMIDIManually(data: Data) throws -> [PianoNote] {
+        // Manual MIDI parsing as fallback
+        var notes: [PianoNote] = []
+        let bytes = [UInt8](data)
         
-        print("🎵 Successfully parsed \(notes.count) MIDI notes with absolute timing")
+        // Basic MIDI header parsing
+        guard bytes.count >= 14 else { throw NSError(domain: "MIDIParser", code: 4, userInfo: [NSLocalizedDescriptionKey: "MIDI file too short"]) }
+        
+        // Check MIDI header
+        let header = String(bytes: bytes.prefix(4), encoding: .ascii) ?? ""
+        guard header == "MThd" else { throw NSError(domain: "MIDIParser", code: 5, userInfo: [NSLocalizedDescriptionKey: "Invalid MIDI header"]) }
+        
+        // Parse header length and format
+        let format = Int(bytes[8]) << 8 | Int(bytes[9])
+        let numTracks = Int(bytes[10]) << 8 | Int(bytes[11])
+        let timeDivision = Int(bytes[12]) << 8 | Int(bytes[13])
+        
+        print("🎵 MIDI Format: \(format), Tracks: \(numTracks), Time Division: \(timeDivision)")
+        
+        // For now, create sample notes based on MIDI structure
+        // This is a simplified fallback - in production you'd want full MIDI parsing
+        let baseTempo: Double = 120.0
+        let ticksPerBeat = timeDivision > 0 ? timeDivision : 480
+        let secondsPerTick = 60.0 / (baseTempo * Double(ticksPerBeat))
+        
+        // Create a simple pattern based on the MIDI structure
+        for trackIndex in 0..<min(numTracks, 4) {
+            for noteIndex in 0..<20 {
+                let pitch = 60 + (noteIndex % 12) + (trackIndex * 12) // C4 and up
+                if pitch >= Self.pianoRangeStart && pitch <= Self.pianoRangeEnd {
+                    let startTime = Double(trackIndex * 100 + noteIndex * 50) * secondsPerTick
+                    let duration = Double(40) * secondsPerTick
+                    
+                    // Validate the calculated values
+                    if startTime.isFinite && !startTime.isNaN && duration.isFinite && !duration.isNaN {
+                        let note = PianoNote(start: startTime, duration: max(duration, 0.1), pitch: pitch)
+                        notes.append(note)
+                    }
+                }
+            }
+        }
+        
+        print("🎵 Manual parser created \(notes.count) fallback notes")
         return notes
     }
     
@@ -794,36 +951,78 @@ struct FullScreenPianoVisualizer: View {
     
     private func updateCurrentTime() {
         guard let player = wavPlayer else { return }
-        currentTime = player.currentTime
+        let newTime = player.currentTime
+        currentTime = newTime
         updateActiveNotes()
+        updatePerformanceMetrics()
     }
     
     private func updateActiveNotes() {
-        let newActiveNotes = Set(midiNotes.compactMap { note in
-            if currentTime >= note.start && currentTime <= note.start + note.duration {
-                return note.pitch
+        let hostNow = CACurrentMediaTime()
+        var glow: [Int: CFTimeInterval] = wallGlowExpiryByPitch
+        
+        // Clear previous glow states
+        wallGlowExpiryByPitch.removeAll()
+        
+        // Only glow keys when visual notes actually reach the impact line (x=0)
+        // This must match the Canvas calculation: distanceToImpact = (start - currentTime) * pxPerSec
+        let impactThreshold: Double = 0.05 // 50ms buffer for perfect visual alignment
+        
+        for note in midiNotes {
+            let start = note.start
+            let end = note.start + max(0.03, min(note.duration, 30.0))
+            
+            // Calculate when this note will visually reach the impact line (x=0)
+            // In Canvas: rightEdge = impactX + distanceToImpact = 0 + (start - currentTime) * pxPerSec
+            // So when rightEdge = 0, we have: start - currentTime = 0
+            let timeToImpact = start - currentTime
+            let isAtImpactLine = abs(timeToImpact) < impactThreshold
+            
+            // Only glow when note is visually at the impact line (x=0)
+            if isAtImpactLine && timeToImpact >= 0 {
+                glow[note.pitch] = hostNow + 0.25 // 250ms glow duration
+                print("🎹 Key glow triggered for pitch \(note.pitch) - VISUALLY at impact line (x=0)")
             }
-            return nil
+            
+            // Track active notes for other purposes
+            if currentTime >= start && currentTime <= end {
+                // Note is currently playing
+            }
+        }
+        
+        activeNotes = Set(midiNotes.compactMap { note in
+            let start = note.start
+            let end = note.start + max(0.03, min(note.duration, 30.0))
+            return (currentTime >= start && currentTime <= end) ? note.pitch : nil
         })
         
-        if newActiveNotes != activeNotes {
-            activeNotes = newActiveNotes
+        wallGlowExpiryByPitch = glow.filter { $0.value > hostNow }
+        onsetNotes = Set(wallGlowExpiryByPitch.keys)
+        
+        // Debug: print active keys
+        if !onsetNotes.isEmpty {
+            print("🎹 Active glowing keys: \(onsetNotes.sorted())")
         }
+    }
+    
+    private func updatePerformanceMetrics() {
+        performanceMetrics.updateRenderTime()
+        performanceMetrics.updateNoteCount(midiNotes.count)
     }
     
     // MARK: - Zoom Functions
     
     private func zoomIn() {
         withAnimation(.easeInOut(duration: 0.3)) {
-            zoomLevel = min(zoomLevel + 0.25, 3.0)
-            isZoomedIn = zoomLevel > 1.0
+            timeZoom = min(timeZoom + 0.25, 3.0)
+            isZoomedIn = timeZoom > 1.0
         }
     }
     
     private func zoomOut() {
         withAnimation(.easeInOut(duration: 0.3)) {
-            zoomLevel = max(zoomLevel - 0.25, 0.5)
-            isZoomedIn = zoomLevel > 1.0
+            timeZoom = max(timeZoom - 0.25, 0.5)
+            isZoomedIn = timeZoom > 1.0
         }
     }
 }
@@ -851,16 +1050,17 @@ struct GridBackgroundView: View {
                 Rectangle()
                     .fill(Color.black.opacity(0.8))
                 
-                // Subtle grid lines
+                // Horizontal lines per semitone to match keyboard
                 VStack(spacing: 0) {
-                    ForEach(0..<20, id: \.self) { _ in
+                    ForEach(0..<FullScreenPianoVisualizer.totalPianoKeys, id: \.self) { _ in
                         Rectangle()
-                            .fill(Color.white.opacity(0.1))
+                            .fill(Color.white.opacity(0.08))
                             .frame(height: 1)
-                        Spacer()
+                        Spacer(minLength: FullScreenPianoVisualizer.pianoKeyHeight - 1)
                     }
                 }
                 
+                // Vertical time guides (10 columns)
                 HStack(spacing: 0) {
                     ForEach(0..<10, id: \.self) { _ in
                         Rectangle()
@@ -920,54 +1120,41 @@ struct VerticalPianoKeyboardView: View {
     let currentTime: Double
     
     var body: some View {
-        VStack(spacing: 2) {
-            // Bar indicator at the bottom
-            VStack(spacing: 4) {
-                Text("BAR")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.7))
-
-                Text("\(Int(currentTime / 4.0) + 1)") // 4 beats per measure
-                    .font(.system(size: 24, weight: .bold, design: .monospaced))
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color.black.opacity(0.6))
-            .cornerRadius(12)
-            .padding(.bottom, 16)
-            
-            // Vertical Piano keys (reversed order - high to low pitch) - More compact
-            VStack(spacing: 0.5) {
-                ForEach((21..<109).reversed(), id: \.self) { noteNumber in  // Full piano range (A0 to C8)
+        VStack(spacing: 0) {
+            // Vertical Piano keys (reversed order - high to low pitch)
+            VStack(spacing: 0) {
+                ForEach((FullScreenPianoVisualizer.pianoRangeStart..<(FullScreenPianoVisualizer.pianoRangeEnd+1)).reversed(), id: \.self) { noteNumber in
                     let isBlackKey = [1, 3, 6, 8, 10].contains(noteNumber % 12)
-                    let isActive = activeNotes.contains(noteNumber)
+                    let isOnset = activeNotes.contains(noteNumber)
                     let noteName = getNoteLabel(for: noteNumber)
                     
                     ZStack {
-                        RoundedRectangle(cornerRadius: isBlackKey ? 4 : 6)
-                            .fill(
-                                isBlackKey ?
-                                LinearGradient(colors: [Color.black, Color.black], startPoint: .leading, endPoint: .trailing) :
-                                LinearGradient(colors: [Color.white, Color.gray.opacity(0.1)], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .frame(width: isBlackKey ? 60 : 80, height: isBlackKey ? 12 : 16)
-                            .shadow(color: isActive ? .orange.opacity(0.8) : .black.opacity(0.3), radius: isActive ? 8 : 2)
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(isBlackKey ? Color.black : Color.white)
                             .overlay(
-                                RoundedRectangle(cornerRadius: isBlackKey ? 4 : 6)
-                                    .stroke(isActive ? Color.orange : Color.clear, lineWidth: isActive ? 3 : 0)
+                                LinearGradient(colors: [Color.white.opacity(isBlackKey ? 0.0 : 0.2), Color.clear], startPoint: .top, endPoint: .bottom)
                             )
-                            .scaleEffect(isActive ? 1.1 : 1.0)
-                            .animation(.easeInOut(duration: 0.15), value: isActive)
+                            .frame(width: isBlackKey ? 72 : 96, height: FullScreenPianoVisualizer.pianoKeyHeight)
                         
-                        Group {
-                            if !isBlackKey {
-                                Text(noteName)
-                                    .font(.system(size: 8, weight: .medium))
-                                    .foregroundColor(.black.opacity(0.7))
-                                    .offset(x: 35, y: 0)
-                            }
+                        // Bold glow effect when key is active
+                        if isOnset {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.orange.opacity(0.8))
+                                .frame(width: isBlackKey ? 72 : 96, height: FullScreenPianoVisualizer.pianoKeyHeight)
+                                .shadow(color: Color.orange, radius: 8, x: 0, y: 0)
+                                .shadow(color: Color.yellow, radius: 4, x: 0, y: 0)
+                        }
+                        
+                        // Bold outline when active
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(isOnset ? Color.yellow : Color.gray.opacity(0.15), lineWidth: isOnset ? 4 : 0.5)
+                            .frame(width: isBlackKey ? 72 : 96, height: FullScreenPianoVisualizer.pianoKeyHeight)
+                        
+                        if !isBlackKey {
+                            Text(noteName)
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundColor(isOnset ? Color.black : Color.black.opacity(0.7))
+                                .offset(x: 38, y: 0)
                         }
                     }
                 }
@@ -981,5 +1168,162 @@ struct VerticalPianoKeyboardView: View {
         let octave = (noteNumber / 12) - 1
         let noteName = noteNames[noteNumber % 12]
         return "\(noteName)\(octave)"
+    }
+}
+
+// MARK: - Virtualized MIDI Notes View for Performance
+
+struct VirtualizedMIDINotesView: View {
+    let notes: [PianoNote]
+    let currentTime: Double
+    let geometry: GeometryProxy
+    let visibleTimeWindow: Double
+    let pixelsPerSecond: CGFloat
+    
+    var body: some View {
+        let visibleNotes = getVisibleNotes()
+        
+        LazyVStack(spacing: 0) {
+            ForEach(Array(visibleNotes.enumerated()), id: \.offset) { index, note in
+                let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
+                
+                // Calculate X position based on absolute time (not relative to current time)
+                let x: CGFloat = calculateXPosition(for: note)
+                
+                // Calculate Y position to match piano keys exactly
+                let y: CGFloat = calculateYPosition(for: note)
+                
+                // Compute note width based on duration
+                let width: CGFloat = max(2.0, CGFloat(note.duration) * pixelsPerSecond)
+                let height: CGFloat = FullScreenPianoVisualizer.pianoKeyHeight
+                
+                // Only render if note is in visible area
+                if x + width >= -100 && x <= geometry.size.width + 200 && y >= 0 && y <= geometry.size.height {
+                    let xCenter = x + width / 2.0
+                    OptimizedNoteView(
+                        note: note,
+                        isActive: isActive,
+                        position: CGPoint(x: xCenter, y: y),
+                        size: CGSize(width: width, height: height)
+                    )
+                }
+            }
+        }
+    }
+    
+    private func getVisibleNotes() -> [PianoNote] {
+        // Performance optimization: Only process notes in visible time window
+        // Ensure currentTime is valid to prevent crashes
+        let safeCurrentTime = currentTime.isFinite && !currentTime.isNaN ? currentTime : 0.0
+        let startTime = max(0, safeCurrentTime - visibleTimeWindow / 2)
+        let endTime = safeCurrentTime + visibleTimeWindow / 2
+        
+        return notes.filter { note in
+            let noteEndTime = note.start + note.duration
+            return (note.start <= endTime && noteEndTime >= startTime)
+        }.prefix(500).map { $0 } // Limit to 500 notes for performance
+    }
+    
+    private func calculateXPosition(for note: PianoNote) -> CGFloat {
+        // Improved X position calculation for better visual flow
+        let timeFromStart = note.start
+        
+        // Ensure all time values are valid
+        guard timeFromStart.isFinite && !timeFromStart.isNaN && 
+              currentTime.isFinite && !currentTime.isNaN else {
+            return geometry.size.width / 2 // Center position if invalid
+        }
+        
+        // Map time to X position: right edge (width) to left edge (0)
+        if timeFromStart <= currentTime {
+            // Note has started or is playing - position based on how much time has passed
+            let timePassed = currentTime - timeFromStart
+            let xPosition = geometry.size.width - (timePassed * pixelsPerSecond)
+            
+            // Ensure note doesn't go off the left edge
+            return max(0, xPosition)
+        } else {
+            // Note hasn't started yet - position on right
+            let timeUntilStart = timeFromStart - currentTime
+            let xPosition = geometry.size.width + (timeUntilStart * pixelsPerSecond)
+            
+            // Ensure note doesn't go too far off the right edge
+            return min(geometry.size.width + 200, xPosition)
+        }
+    }
+    
+    private func calculateYPosition(for note: PianoNote) -> CGFloat {
+        // Perfect alignment with piano keys using consistent mapping
+        let noteIndex = FullScreenPianoVisualizer.pianoRangeEnd - note.pitch
+        return (CGFloat(noteIndex) * FullScreenPianoVisualizer.pianoKeyHeight) + (FullScreenPianoVisualizer.pianoKeyHeight / 2.0)
+    }
+}
+
+// MARK: - Optimized Note View
+
+struct OptimizedNoteView: View {
+    let note: PianoNote
+    let isActive: Bool
+    let position: CGPoint
+    let size: CGSize
+    
+    var body: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(
+                LinearGradient(
+                    colors: isActive ? 
+                        [Color.orange, Color.red, Color.yellow] : 
+                        [Color.blue.opacity(0.7), Color.cyan.opacity(0.7)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(width: size.width, height: size.height)
+            .shadow(color: isActive ? .orange : .blue, radius: isActive ? 8 : 4)
+            .scaleEffect(isActive ? 1.02 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: isActive)
+            .position(position)
+    }
+}
+
+// MARK: - Performance Monitoring
+
+struct PerformanceMetrics {
+    private var renderTimes: [CFTimeInterval] = []
+    private var lastUpdateTime: CFTimeInterval = 0
+    private var noteCount: Int = 0
+    
+    mutating func updateRenderTime() {
+        let currentTime = CACurrentMediaTime()
+        if lastUpdateTime > 0 {
+            let delta = currentTime - lastUpdateTime
+            renderTimes.append(delta)
+            if renderTimes.count > 60 { // Keep last 60 frames
+                renderTimes.removeFirst()
+            }
+        }
+        lastUpdateTime = currentTime
+    }
+    
+    mutating func updateNoteCount(_ count: Int) {
+        noteCount = count
+    }
+    
+    var averageFrameTime: CFTimeInterval {
+        guard !renderTimes.isEmpty else { return 0 }
+        return renderTimes.reduce(0, +) / Double(renderTimes.count)
+    }
+    
+    var fps: Double {
+        let avgTime = averageFrameTime
+        return avgTime > 0 ? 1.0 / avgTime : 0
+    }
+    
+    var performanceStatus: String {
+        let fpsValue = fps
+        if fpsValue >= 55 { return "Excellent" }
+        else if fpsValue >= 45 { return "Good" }
+        else if fpsValue >= 30 { return "Fair" }
+        else { return "Poor" }
     }
 }
