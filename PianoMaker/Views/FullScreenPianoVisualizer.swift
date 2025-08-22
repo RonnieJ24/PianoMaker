@@ -416,17 +416,18 @@ struct FullScreenPianoVisualizer: View {
                             let totalVisibleTime: Double = 8.0 // Show 8 seconds of notes
                             
                             // X position: right edge (0) to left edge (width)
-                            let x: CGFloat
-                            if timeFromStart < 0 {
-                                // Note hasn't started yet - position on right
-                                x = geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
-                            } else if timeFromStart <= noteDuration {
-                                // Note is playing - move from right to left
-                                x = geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
-                            } else {
-                                // Note has finished - position on left
-                                x = 0
-                            }
+                            let x: CGFloat = {
+                                if timeFromStart < 0 {
+                                    // Note hasn't started yet - position on right
+                                    return geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
+                                } else if timeFromStart <= noteDuration {
+                                    // Note is playing - move from right to left
+                                    return geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
+                                } else {
+                                    // Note has finished - position on left
+                                    return 0
+                                }
+                            }()
                             
                             // Calculate Y position to match piano keys exactly
                             let noteIndex = 108 - note.pitch
