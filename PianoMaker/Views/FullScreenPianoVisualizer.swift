@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import AudioToolbox
+import AudioToolbox.MusicPlayer
 
 struct FullScreenPianoVisualizer: View {
     let renderedWAVURL: URL?
@@ -113,7 +114,6 @@ struct FullScreenPianoVisualizer: View {
             playPauseButton
             stopButton
             Spacer()
-            zoomControlsView
             statusIndicator
         }
         .padding(.horizontal, 20)
@@ -294,21 +294,24 @@ struct FullScreenPianoVisualizer: View {
     private var pianoAndMidiView: some View {
         ScrollView([.horizontal, .vertical], showsIndicators: false) {
             HStack(spacing: 0) {
-                VerticalPianoKeyboardView(activeNotes: activeNotes, currentTime: currentTime)
-                    .frame(width: 100)
-                    .background(Color.black.opacity(0.9))
-                
-                midiGridView
-                    .scaleEffect(zoomLevel)
-                    .animation(.easeInOut(duration: 0.3), value: zoomLevel)
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { value in
-                                let newZoom = zoomLevel * value
-                                zoomLevel = max(0.5, min(3.0, newZoom))
-                                isZoomedIn = zoomLevel > 1.0
-                            }
-                    )
+                // Piano and MIDI grid as one unit that zooms together
+                HStack(spacing: 0) {
+                    VerticalPianoKeyboardView(activeNotes: activeNotes, currentTime: currentTime)
+                        .frame(width: 100)
+                        .background(Color.black.opacity(0.9))
+                    
+                    midiGridView
+                }
+                .scaleEffect(zoomLevel)
+                .animation(.easeInOut(duration: 0.3), value: zoomLevel)
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            let newZoom = zoomLevel * value
+                            zoomLevel = max(0.5, min(3.0, newZoom))
+                            isZoomedIn = zoomLevel > 1.0
+                        }
+                )
             }
         }
         .background(Color.black.opacity(0.3))
@@ -518,66 +521,109 @@ struct FullScreenPianoVisualizer: View {
     }
     
     private func parseMIDIFile(data: Data) throws -> [PianoNote] {
-        // Basic MIDI file parsing
-        // This is a simplified parser - for production, you'd want a proper MIDI library
+        // Use MusicSequence for proper MIDI parsing
         var notes: [PianoNote] = []
         
-        // Look for MIDI events in the data
-        // This is a very basic implementation that looks for note on/off events
-        var position = 0
-        var currentTime = 0.0
-        let ticksPerQuarter = 480.0 // Standard MIDI timing
-        let tempo = 120.0 // BPM
-        let secondsPerTick = (60.0 / tempo) / ticksPerQuarter
+        // Create a temporary file for MusicSequence
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString).appendingPathExtension("mid")
+        try data.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
         
-        while position < data.count - 3 {
-            let byte1 = data[position]
-            let byte2 = data[position + 1]
-            let byte3 = data[position + 2]
-            
-            // Look for Note On events (0x90-0x9F)
-            if (byte1 & 0xF0) == 0x90 && byte3 > 0 {
-                let pitch = Int(byte2)
-                let _ = Int(byte3) // velocity (not used in basic parsing)
-                
-                if pitch >= 21 && pitch <= 108 { // Valid piano range
-                    // Look ahead for corresponding Note Off event
-                    var duration = 0.5 // Default duration
-                    var searchPos = position + 3
-                    var searchTime = currentTime
-                    
-                    while searchPos < data.count - 3 {
-                        let searchByte1 = data[searchPos]
-                        let searchByte2 = data[searchPos + 1]
-                        
-                        // Note Off event (0x80-0x8F) or Note On with velocity 0
-                        if ((searchByte1 & 0xF0) == 0x80 || ((searchByte1 & 0xF0) == 0x90 && data[searchPos + 2] == 0)) 
-                           && searchByte2 == byte2 {
-                            duration = searchTime - currentTime
-                            break
-                        }
-                        
-                        // Simple time advancement (very basic)
-                        if data[searchPos] < 0x80 {
-                            searchTime += Double(data[searchPos]) * secondsPerTick
-                        }
-                        
-                        searchPos += 1
-                    }
-                    
-                    let note = PianoNote(start: currentTime, duration: max(duration, 0.1), pitch: pitch)
-                    notes.append(note)
-                }
-            }
-            
-            // Simple time advancement (very basic)
-            if byte1 < 0x80 {
-                currentTime += Double(byte1) * secondsPerTick
-            }
-            
-            position += 1
+        var sequence: MusicSequence?
+        guard NewMusicSequence(&sequence) == noErr, let seq = sequence else {
+            throw NSError(domain: "MIDIParser", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create MusicSequence"])
+        }
+        defer { DisposeMusicSequence(seq) }
+        
+        // Load MIDI file
+        let loadStatus = MusicSequenceFileLoad(seq, tempURL as CFURL, .midiType, MusicSequenceLoadFlags.smf_ChannelsToTracks)
+        guard loadStatus == noErr else {
+            throw NSError(domain: "MIDIParser", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to load MIDI file"])
         }
         
+        // Get track count
+        var trackCount: UInt32 = 0
+        guard MusicSequenceGetTrackCount(seq, &trackCount) == noErr else {
+            throw NSError(domain: "MIDIParser", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get track count"])
+        }
+        
+        // Parse each track
+        for trackIndex in 0..<trackCount {
+            var track: MusicTrack?
+            guard MusicSequenceGetIndTrack(seq, trackIndex, &track) == noErr, let trk = track else { continue }
+            
+            var iterator: MusicEventIterator?
+            guard NewMusicEventIterator(trk, &iterator) == noErr, let iter = iterator else { continue }
+            defer { DisposeMusicEventIterator(iter) }
+            
+            var hasEvent: DarwinBoolean = false
+            MusicEventIteratorHasCurrentEvent(iter, &hasEvent)
+            
+            while hasEvent.boolValue {
+                var time: MusicTimeStamp = 0
+                var eventType: MusicEventType = 0
+                var eventData: UnsafeRawPointer?
+                var eventDataSize: UInt32 = 0
+                
+                if MusicEventIteratorGetEventInfo(iter, &time, &eventType, &eventData, &eventDataSize) == noErr {
+                    if eventType == kMusicEventType_MIDINoteMessage,
+                       let ptr = eventData?.assumingMemoryBound(to: MIDINoteMessage.self) {
+                        let msg = ptr.pointee
+                        let pitch = Int(msg.note)
+                        let velocity = Int(msg.velocity)
+                        
+                        if pitch >= 21 && pitch <= 108 && velocity > 0 { // Valid piano range and note on
+                            // Convert MIDI ticks to seconds (assuming 120 BPM, 480 ticks per quarter)
+                            let secondsPerTick = 60.0 / (120.0 * 480.0)
+                            let startTime = Double(time) * secondsPerTick
+                            
+                            // Look ahead for note off to calculate duration
+                            var noteOffTime: MusicTimeStamp = 0
+                            var foundNoteOff = false
+                            
+                            // Create a temporary iterator to look ahead
+                            var tempIterator: MusicEventIterator?
+                            if NewMusicEventIterator(trk, &tempIterator) == noErr, let tempIter = tempIterator {
+                                defer { DisposeMusicEventIterator(tempIter) }
+                                
+                                // Move to current position
+                                while MusicEventIteratorGetEventInfo(tempIter, &noteOffTime, &eventType, &eventData, &eventDataSize) == noErr {
+                                    if eventType == kMusicEventType_MIDINoteMessage,
+                                       let ptr = eventData?.assumingMemoryBound(to: MIDINoteMessage.self) {
+                                        let tempMsg = ptr.pointee
+                                        if tempMsg.note == msg.note && tempMsg.velocity == 0 { // Note off
+                                            foundNoteOff = true
+                                            break
+                                        }
+                                    }
+                                    MusicEventIteratorNextEvent(tempIter)
+                                    MusicEventIteratorHasCurrentEvent(tempIter, &hasEvent)
+                                    if !hasEvent.boolValue { break }
+                                }
+                            }
+                            
+                            let duration: Double
+                            if foundNoteOff {
+                                duration = Double(noteOffTime - time) * secondsPerTick
+                            } else {
+                                duration = 0.5 // Default duration if note off not found
+                            }
+                            
+                            let note = PianoNote(start: startTime, duration: max(duration, 0.1), pitch: pitch)
+                            notes.append(note)
+                        }
+                    }
+                }
+                
+                MusicEventIteratorNextEvent(iter)
+                MusicEventIteratorHasCurrentEvent(iter, &hasEvent)
+            }
+        }
+        
+        // Sort notes by start time
+        notes.sort { $0.start < $1.start }
+        
+        print("🎵 Successfully parsed \(notes.count) MIDI notes")
         return notes
     }
     
