@@ -689,10 +689,11 @@ struct FullScreenPianoVisualizer: View {
         var tempoTrack: MusicTrack?
         var tempoTrackIndex: UInt32 = 0
         var tempoTrackLength: MusicTimeStamp = 0
+        var dataSize: UInt32 = 0
         
         // Get tempo track for accurate timing
         if MusicSequenceGetTempoTrack(seq, &tempoTrack) == noErr, let tempoTrk = tempoTrack {
-            MusicTrackGetProperty(tempoTrk, kSequenceTrackProperty_TrackLength, &tempoTrackLength, nil)
+            MusicTrackGetProperty(tempoTrk, kSequenceTrackProperty_TrackLength, &tempoTrackLength, &dataSize)
         }
         
         // Get track count
