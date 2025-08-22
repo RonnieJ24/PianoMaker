@@ -616,6 +616,22 @@ struct FullScreenPianoVisualizer: View {
             activeNotes = newActiveNotes
         }
     }
+    
+    // MARK: - Zoom Functions
+    
+    private func zoomIn() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            zoomLevel = min(zoomLevel + 0.25, 3.0)
+            isZoomedIn = zoomLevel > 1.0
+        }
+    }
+    
+    private func zoomOut() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            zoomLevel = max(zoomLevel - 0.25, 0.5)
+            isZoomedIn = zoomLevel > 1.0
+        }
+    }
 }
 
 // Helper class for CADisplayLink
@@ -767,21 +783,5 @@ struct VerticalPianoKeyboardView: View {
         let octave = (noteNumber / 12) - 1
         let noteName = noteNames[noteNumber % 12]
         return "\(noteName)\(octave)"
-    }
-    
-    // MARK: - Zoom Functions
-    
-    private func zoomIn() {
-        withAnimation(.easeInOut(duration: 0.3)) {
-            zoomLevel = min(zoomLevel + 0.25, 3.0)
-            isZoomedIn = zoomLevel > 1.0
-        }
-    }
-    
-    private func zoomOut() {
-        withAnimation(.easeInOut(duration: 0.3)) {
-            zoomLevel = max(zoomLevel - 0.25, 0.5)
-            isZoomedIn = zoomLevel > 1.0
-        }
     }
 }
