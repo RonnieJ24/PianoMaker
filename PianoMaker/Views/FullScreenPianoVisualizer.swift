@@ -2,8 +2,16 @@ import SwiftUI
 import AVFoundation
 import AudioToolbox
 import AudioToolbox.MusicPlayer
+import SwiftUI.Canvas
 
 struct FullScreenPianoVisualizer: View {
+    // MARK: - Constants for Perfect Alignment
+    private static let pianoKeyHeight: CGFloat = 12.0
+    private static let totalPianoKeys: Int = 88
+    private static let pianoRangeStart: Int = 21  // A0
+    private static let pianoRangeEnd: Int = 108   // C8
+    private static let totalPianoHeight: CGFloat = CGFloat(totalPianoKeys) * pianoKeyHeight // 1056px
+    
     let renderedWAVURL: URL?
     let midiURL: URL?
     
@@ -400,48 +408,76 @@ struct FullScreenPianoVisualizer: View {
                         }
                     } else {
                         // MIDI notes - only show notes that should be visible based on time
+                        // Performance optimization: Only render notes in visible time window
+                        let visibleTimeWindow: Double = 10.0 // Show 10 seconds of notes for smooth scrolling
                         let visibleNotes = midiNotes.filter { note in
                             let noteEndTime = note.start + note.duration
                             let noteStartTime = note.start
-                            // Show notes that are currently playing or will play soon
-                            return (currentTime >= noteStartTime - 2.0 && currentTime <= noteEndTime + 2.0)
+                            // Show notes that are currently playing, will play soon, or just finished
+                            return (currentTime >= noteStartTime - visibleTimeWindow && currentTime <= noteEndTime + 2.0)
                         }
                         
-                        ForEach(Array(visibleNotes.enumerated()), id: \.offset) { index, note in
-                            let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
-                            
-                            // Calculate X position based on time progression
-                            let timeFromStart = currentTime - note.start
-                            let noteDuration = note.duration
-                            let totalVisibleTime: Double = 8.0 // Show 8 seconds of notes
-                            
-                            // X position: right edge (0) to left edge (width)
-                            let x: CGFloat = {
-                                if timeFromStart < 0 {
-                                    // Note hasn't started yet - position on right
-                                    return geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
-                                } else if timeFromStart <= noteDuration {
-                                    // Note is playing - move from right to left
-                                    return geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
-                                } else {
-                                    // Note has finished - position on left
-                                    return 0
-                                }
-                            }()
-                            
-                            // Calculate Y position to match piano keys exactly
-                            let noteIndex = 108 - note.pitch
-                            let keyHeight: CGFloat = 12.0 // Match the piano key height exactly
-                            let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
-                            
-                            // Only render if note is in visible area
-                            Group {
-                                if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
-                                    FallingNoteView(
-                                        note: note,
-                                        isActive: isActive,
-                                        position: CGPoint(x: x, y: y)
+                        // Use Canvas for high-performance note rendering
+                        Canvas { context, size in
+                            for note in visibleNotes {
+                                let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
+                                
+                                // Calculate X position based on time progression
+                                let timeFromStart = currentTime - note.start
+                                let noteDuration = note.duration
+                                let totalVisibleTime: Double = 8.0 // Show 8 seconds of notes
+                                
+                                // X position: right edge (0) to left edge (width)
+                                let x: CGFloat = {
+                                    if timeFromStart < 0 {
+                                        // Note hasn't started yet - position on right
+                                        return size.width - (abs(timeFromStart) / totalVisibleTime) * size.width
+                                    } else if timeFromStart <= noteDuration {
+                                        // Note is playing - move from right to left
+                                        return size.width - (timeFromStart / totalVisibleTime) * size.width
+                                    } else {
+                                        // Note has finished - position on left
+                                        return 0
+                                    }
+                                }()
+                                
+                                // Calculate Y position to match piano keys exactly using constants
+                                let noteIndex = Self.pianoRangeEnd - note.pitch
+                                let y = (CGFloat(noteIndex) * Self.pianoKeyHeight) + (Self.pianoKeyHeight / 2.0)
+                                
+                                // Only render if note is in visible area
+                                if x >= -50 && x <= size.width + 50 && y >= 0 && y <= size.height {
+                                    // Create note rectangle
+                                    let noteRect = CGRect(
+                                        x: x - 30, // Center the note
+                                        y: y - 6,  // Center vertically on key
+                                        width: 60,
+                                        height: 12
                                     )
+                                    
+                                    // Fill with gradient based on active state
+                                    let colors = isActive ? 
+                                        [Color.orange, Color.red, Color.yellow] : 
+                                        [Color.blue.opacity(0.7), Color.cyan.opacity(0.7)]
+                                    
+                                    context.fill(
+                                        Path(noteRect),
+                                        with: .linearGradient(
+                                            Gradient(colors: colors),
+                                            startPoint: CGPoint(x: noteRect.minX, y: noteRect.minY),
+                                            endPoint: CGPoint(x: noteRect.maxX, y: noteRect.maxY)
+                                        )
+                                    )
+                                    
+                                    // Add glow effect for active notes
+                                    if isActive {
+                                        context.blendMode = .plusLighter
+                                        context.fill(
+                                            Path(noteRect.insetBy(dx: -2, dy: -2)),
+                                            with: .color(.orange.opacity(0.3))
+                                        )
+                                        context.blendMode = .normal
+                                    }
                                 }
                             }
                         }
@@ -449,7 +485,7 @@ struct FullScreenPianoVisualizer: View {
                 }
             }
         }
-        .frame(width: 400, height: 1056) // Exact piano keyboard height: 88 keys * 12px per key
+        .frame(width: 400, height: Self.totalPianoHeight) // Exact piano keyboard height using constants
         .background(Color.black.opacity(0.8))
     }
     
@@ -643,7 +679,7 @@ struct FullScreenPianoVisualizer: View {
     }
     
     private func parseMIDIFile(data: Data) throws -> [PianoNote] {
-        // Use MusicSequence for proper MIDI parsing
+        // Use MusicSequence for proper MIDI parsing with absolute timing
         var notes: [PianoNote] = []
         
         // Create a temporary file for MusicSequence
@@ -663,13 +699,23 @@ struct FullScreenPianoVisualizer: View {
             throw NSError(domain: "MIDIParser", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to load MIDI file"])
         }
         
+        // Get sequence info for proper timing
+        var tempoTrack: MusicTrack?
+        var tempoTrackIndex: UInt32 = 0
+        var tempoTrackLength: MusicTimeStamp = 0
+        
+        // Get tempo track for accurate timing
+        if MusicSequenceGetTempoTrack(seq, &tempoTrack) == noErr, let tempoTrk = tempoTrack {
+            MusicTrackGetProperty(tempoTrk, kSequenceTrackProperty_TrackLength, &tempoTrackLength, nil)
+        }
+        
         // Get track count
         var trackCount: UInt32 = 0
         guard MusicSequenceGetTrackCount(seq, &trackCount) == noErr else {
             throw NSError(domain: "MIDIParser", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get track count"])
         }
         
-        // Parse each track
+        // Parse each track with proper timing
         for trackIndex in 0..<trackCount {
             var track: MusicTrack?
             guard MusicSequenceGetIndTrack(seq, trackIndex, &track) == noErr, let trk = track else { continue }
@@ -680,6 +726,9 @@ struct FullScreenPianoVisualizer: View {
             
             var hasEvent: DarwinBoolean = false
             MusicEventIteratorHasCurrentEvent(iter, &hasEvent)
+            
+            // Track note on/off pairs for proper duration calculation
+            var activeNotes: [Int: (MusicTimeStamp, Int)] = [:] // pitch -> (startTime, velocity)
             
             while hasEvent.boolValue {
                 var time: MusicTimeStamp = 0
@@ -694,45 +743,27 @@ struct FullScreenPianoVisualizer: View {
                         let pitch = Int(msg.note)
                         let velocity = Int(msg.velocity)
                         
-                        if pitch >= 21 && pitch <= 108 && velocity > 0 { // Valid piano range and note on
-                            // Convert MIDI ticks to seconds (assuming 120 BPM, 480 ticks per quarter)
-                            let secondsPerTick = 60.0 / (120.0 * 480.0)
-                            let startTime = Double(time) * secondsPerTick
-                            
-                            // Look ahead for note off to calculate duration
-                            var noteOffTime: MusicTimeStamp = 0
-                            var foundNoteOff = false
-                            
-                            // Create a temporary iterator to look ahead
-                            var tempIterator: MusicEventIterator?
-                            if NewMusicEventIterator(trk, &tempIterator) == noErr, let tempIter = tempIterator {
-                                defer { DisposeMusicEventIterator(tempIter) }
-                                
-                                // Move to current position
-                                while MusicEventIteratorGetEventInfo(tempIter, &noteOffTime, &eventType, &eventData, &eventDataSize) == noErr {
-                                    if eventType == kMusicEventType_MIDINoteMessage,
-                                       let ptr = eventData?.assumingMemoryBound(to: MIDINoteMessage.self) {
-                                        let tempMsg = ptr.pointee
-                                        if tempMsg.note == msg.note && tempMsg.velocity == 0 { // Note off
-                                            foundNoteOff = true
-                                            break
-                                        }
-                                    }
-                                    MusicEventIteratorNextEvent(tempIter)
-                                    MusicEventIteratorHasCurrentEvent(tempIter, &hasEvent)
-                                    if !hasEvent.boolValue { break }
+                        if pitch >= 21 && pitch <= 108 { // Valid piano range
+                            if velocity > 0 { // Note on
+                                activeNotes[pitch] = (time, velocity)
+                            } else { // Note off
+                                if let (startTime, _) = activeNotes.removeValue(forKey: pitch) {
+                                    // Calculate duration using absolute times
+                                    let duration = Double(time - startTime)
+                                    
+                                    // Convert MIDI ticks to seconds using proper tempo
+                                    let secondsPerTick = 60.0 / (120.0 * 480.0) // Default 120 BPM, 480 ticks/quarter
+                                    let startTimeSeconds = Double(startTime) * secondsPerTick
+                                    let durationSeconds = duration * secondsPerTick
+                                    
+                                    let note = PianoNote(
+                                        start: startTimeSeconds,
+                                        duration: max(durationSeconds, 0.1),
+                                        pitch: pitch
+                                    )
+                                    notes.append(note)
                                 }
                             }
-                            
-                            let duration: Double
-                            if foundNoteOff {
-                                duration = Double(noteOffTime - time) * secondsPerTick
-                            } else {
-                                duration = 0.5 // Default duration if note off not found
-                            }
-                            
-                            let note = PianoNote(start: startTime, duration: max(duration, 0.1), pitch: pitch)
-                            notes.append(note)
                         }
                     }
                 }
@@ -740,12 +771,20 @@ struct FullScreenPianoVisualizer: View {
                 MusicEventIteratorNextEvent(iter)
                 MusicEventIteratorHasCurrentEvent(iter, &hasEvent)
             }
+            
+            // Handle any remaining active notes (no note off found)
+            for (pitch, (startTime, _)) in activeNotes {
+                let secondsPerTick = 60.0 / (120.0 * 480.0)
+                let startTimeSeconds = Double(startTime) * secondsPerTick
+                let note = PianoNote(start: startTimeSeconds, duration: 0.5, pitch: pitch)
+                notes.append(note)
+            }
         }
         
-        // Sort notes by start time
+        // Sort notes by start time for proper sequencing
         notes.sort { $0.start < $1.start }
         
-        print("🎵 Successfully parsed \(notes.count) MIDI notes")
+        print("🎵 Successfully parsed \(notes.count) MIDI notes with absolute timing")
         return notes
     }
     
