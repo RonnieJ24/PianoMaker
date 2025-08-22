@@ -61,10 +61,12 @@ struct FullScreenPianoVisualizer: View {
             transportControlsView
             timeDisplayView
             
-            if isLoadingMIDI {
-                loadingView
-            } else {
-                pianoAndMidiView
+            Group {
+                if isLoadingMIDI {
+                    loadingView
+                } else {
+                    pianoAndMidiView
+                }
             }
         }
     }
@@ -86,23 +88,25 @@ struct FullScreenPianoVisualizer: View {
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.7))
             
-            if !midiNotes.isEmpty {
-                VStack(spacing: 8) {
-                    Text("MIDI Data Loaded:")
-                        .font(.caption)
-                        .foregroundColor(.green)
-                    
-                    Text("\(midiNotes.count) notes")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.8))
-                    
-                    if let firstNote = midiNotes.first {
-                        Text("First note: Pitch \(firstNote.pitch) at \(String(format: "%.1f", firstNote.start))s")
+            Group {
+                if !midiNotes.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("MIDI Data Loaded:")
                             .font(.caption)
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.green)
+                        
+                        Text("\(midiNotes.count) notes")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.8))
+                        
+                        if let firstNote = midiNotes.first {
+                            Text("First note: Pitch \(firstNote.pitch) at \(String(format: "%.1f", firstNote.start))s")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.6))
+                        }
                     }
+                    .padding(.top, 20)
                 }
-                .padding(.top, 20)
             }
             
             Spacer()
@@ -371,70 +375,72 @@ struct FullScreenPianoVisualizer: View {
             ZStack {
                 GridBackgroundView()
                 
-                if isLoadingMIDI {
-                    // Loading indicator
-                    VStack {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            .scaleEffect(1.5)
-                        Text("Loading MIDI...")
-                            .foregroundColor(.white)
-                            .font(.caption)
-                            .padding(.top, 8)
-                    }
-                } else if midiNotes.isEmpty {
-                    // No notes indicator
-                    VStack {
-                        Image(systemName: "music.note")
-                            .font(.system(size: 40))
-                            .foregroundColor(.white.opacity(0.5))
-                        Text("No MIDI notes found")
-                            .foregroundColor(.white.opacity(0.7))
-                            .font(.caption)
-                            .padding(.top, 8)
-                    }
-                } else {
-                    // MIDI notes - only show notes that should be visible based on time
-                    let visibleNotes = midiNotes.filter { note in
-                        let noteEndTime = note.start + note.duration
-                        let noteStartTime = note.start
-                        // Show notes that are currently playing or will play soon
-                        return (currentTime >= noteStartTime - 2.0 && currentTime <= noteEndTime + 2.0)
-                    }
-                    
-                    ForEach(Array(visibleNotes.enumerated()), id: \.offset) { index, note in
-                        let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
-                        
-                        // Calculate X position based on time progression
-                        let timeFromStart = currentTime - note.start
-                        let noteDuration = note.duration
-                        let totalVisibleTime: Double = 8.0 // Show 8 seconds of notes
-                        
-                        // X position: right edge (0) to left edge (width)
-                        let x: CGFloat
-                        if timeFromStart < 0 {
-                            // Note hasn't started yet - position on right
-                            x = geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
-                        } else if timeFromStart <= noteDuration {
-                            // Note is playing - move from right to left
-                            x = geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
-                        } else {
-                            // Note has finished - position on left
-                            x = 0
+                Group {
+                    if isLoadingMIDI {
+                        // Loading indicator
+                        VStack {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(1.5)
+                            Text("Loading MIDI...")
+                                .foregroundColor(.white)
+                                .font(.caption)
+                                .padding(.top, 8)
+                        }
+                    } else if midiNotes.isEmpty {
+                        // No notes indicator
+                        VStack {
+                            Image(systemName: "music.note")
+                                .font(.system(size: 40))
+                                .foregroundColor(.white.opacity(0.5))
+                            Text("No MIDI notes found")
+                                .foregroundColor(.white.opacity(0.7))
+                                .font(.caption)
+                                .padding(.top, 8)
+                        }
+                    } else {
+                        // MIDI notes - only show notes that should be visible based on time
+                        let visibleNotes = midiNotes.filter { note in
+                            let noteEndTime = note.start + note.duration
+                            let noteStartTime = note.start
+                            // Show notes that are currently playing or will play soon
+                            return (currentTime >= noteStartTime - 2.0 && currentTime <= noteEndTime + 2.0)
                         }
                         
-                        // Calculate Y position to match piano keys exactly
-                        let noteIndex = 108 - note.pitch
-                        let keyHeight: CGFloat = 12.0 // Match the piano key height exactly
-                        let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
-                        
-                        // Only render if note is in visible area
-                        if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
-                            FallingNoteView(
-                                note: note,
-                                isActive: isActive,
-                                position: CGPoint(x: x, y: y)
-                            )
+                        ForEach(Array(visibleNotes.enumerated()), id: \.offset) { index, note in
+                            let isActive = currentTime >= note.start && currentTime <= (note.start + note.duration)
+                            
+                            // Calculate X position based on time progression
+                            let timeFromStart = currentTime - note.start
+                            let noteDuration = note.duration
+                            let totalVisibleTime: Double = 8.0 // Show 8 seconds of notes
+                            
+                            // X position: right edge (0) to left edge (width)
+                            let x: CGFloat
+                            if timeFromStart < 0 {
+                                // Note hasn't started yet - position on right
+                                x = geometry.size.width - (abs(timeFromStart) / totalVisibleTime) * geometry.size.width
+                            } else if timeFromStart <= noteDuration {
+                                // Note is playing - move from right to left
+                                x = geometry.size.width - (timeFromStart / totalVisibleTime) * geometry.size.width
+                            } else {
+                                // Note has finished - position on left
+                                x = 0
+                            }
+                            
+                            // Calculate Y position to match piano keys exactly
+                            let noteIndex = 108 - note.pitch
+                            let keyHeight: CGFloat = 12.0 // Match the piano key height exactly
+                            let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
+                            
+                            // Only render if note is in visible area
+                            if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
+                                FallingNoteView(
+                                    note: note,
+                                    isActive: isActive,
+                                    position: CGPoint(x: x, y: y)
+                                )
+                            }
                         }
                     }
                 }
