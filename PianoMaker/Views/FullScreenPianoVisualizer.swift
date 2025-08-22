@@ -14,6 +14,8 @@ struct FullScreenPianoVisualizer: View {
     @State private var midiNotes: [PianoNote] = []
     @State private var activeNotes: Set<Int> = []
     @State private var displayLink: CADisplayLink?
+    @State private var zoomLevel: CGFloat = 1.0
+    @State private var isZoomedIn = false
     
     @Environment(\.dismiss) private var dismiss
     
@@ -111,6 +113,7 @@ struct FullScreenPianoVisualizer: View {
             playPauseButton
             stopButton
             Spacer()
+            zoomControlsView
             statusIndicator
         }
         .padding(.horizontal, 20)
@@ -163,6 +166,52 @@ struct FullScreenPianoVisualizer: View {
                     .foregroundColor(.white)
                     .fontWeight(.bold)
             }
+        }
+    }
+    
+    private var zoomControlsView: some View {
+        HStack(spacing: 8) {
+            Button(action: zoomOut) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.purple, Color.purple.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 32, height: 32)
+                        .shadow(color: Color.purple.opacity(0.8), radius: 6, x: 0, y: 3)
+
+                    Image(systemName: "minus.magnifyingglass")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .fontWeight(.bold)
+                }
+            }
+            .disabled(zoomLevel <= 0.5)
+            
+            Button(action: zoomIn) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.green, Color.green.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 32, height: 32)
+                        .shadow(color: Color.green.opacity(0.8), radius: 6, x: 0, y: 3)
+
+                    Image(systemName: "plus.magnifyingglass")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .fontWeight(.bold)
+                }
+            }
+            .disabled(zoomLevel >= 3.0)
         }
     }
     
@@ -250,6 +299,16 @@ struct FullScreenPianoVisualizer: View {
                     .background(Color.black.opacity(0.9))
                 
                 midiGridView
+                    .scaleEffect(zoomLevel)
+                    .animation(.easeInOut(duration: 0.3), value: zoomLevel)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let newZoom = zoomLevel * value
+                                zoomLevel = max(0.5, min(3.0, newZoom))
+                                isZoomedIn = zoomLevel > 1.0
+                            }
+                    )
             }
         }
         .background(Color.black.opacity(0.3))
@@ -270,8 +329,6 @@ struct FullScreenPianoVisualizer: View {
                     let keyHeight = geometry.size.height / 88.0
                     let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
                     
-
-                    
                     if x > -100 && x < geometry.size.width + 100 && y >= 0 && y <= geometry.size.height && timeProgress >= 0 && timeProgress <= 1.0 && currentTime <= note.start + note.duration + 3.0 {
                         FallingNoteView(
                             note: note,
@@ -282,7 +339,7 @@ struct FullScreenPianoVisualizer: View {
                 }
             }
         }
-        .frame(width: 300, height: 600)
+        .frame(width: 400, height: 1056) // Match piano keyboard height: 88 keys * 12px per key
         .background(Color.black.opacity(0.8))
     }
     
@@ -710,5 +767,21 @@ struct VerticalPianoKeyboardView: View {
         let octave = (noteNumber / 12) - 1
         let noteName = noteNames[noteNumber % 12]
         return "\(noteName)\(octave)"
+    }
+    
+    // MARK: - Zoom Functions
+    
+    private func zoomIn() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            zoomLevel = min(zoomLevel + 0.25, 3.0)
+            isZoomedIn = zoomLevel > 1.0
+        }
+    }
+    
+    private func zoomOut() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            zoomLevel = max(zoomLevel - 0.25, 0.5)
+            isZoomedIn = zoomLevel > 1.0
+        }
     }
 }
