@@ -434,12 +434,14 @@ struct FullScreenPianoVisualizer: View {
                             let y = (CGFloat(noteIndex) * keyHeight) + (keyHeight / 2.0)
                             
                             // Only render if note is in visible area
-                            if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
-                                FallingNoteView(
-                                    note: note,
-                                    isActive: isActive,
-                                    position: CGPoint(x: x, y: y)
-                                )
+                            Group {
+                                if x >= -50 && x <= geometry.size.width + 50 && y >= 0 && y <= geometry.size.height {
+                                    FallingNoteView(
+                                        note: note,
+                                        isActive: isActive,
+                                        position: CGPoint(x: x, y: y)
+                                    )
+                                }
                             }
                         }
                     }
@@ -869,14 +871,16 @@ struct FallingNoteView: View {
                 .animation(.easeInOut(duration: 0.2), value: isActive)
             
             // Particle trail effect
-            if isActive {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle()
-                        .fill(Color.yellow.opacity(0.6))
-                        .frame(width: 6, height: 6)
-                        .offset(x: CGFloat(i * -15), y: CGFloat.random(in: -10...10))
-                        .opacity(0.8 - Double(i) * 0.3)
-                        .animation(.easeOut(duration: 0.5).delay(Double(i) * 0.1), value: isActive)
+            Group {
+                if isActive {
+                    ForEach(0..<3, id: \.self) { i in
+                        Circle()
+                            .fill(Color.yellow.opacity(0.6))
+                            .frame(width: 6, height: 6)
+                            .offset(x: CGFloat(i * -15), y: CGFloat.random(in: -10...10))
+                            .opacity(0.8 - Double(i) * 0.3)
+                            .animation(.easeOut(duration: 0.5).delay(Double(i) * 0.1), value: isActive)
+                    }
                 }
             }
         }
@@ -930,11 +934,13 @@ struct VerticalPianoKeyboardView: View {
                             .scaleEffect(isActive ? 1.1 : 1.0)
                             .animation(.easeInOut(duration: 0.15), value: isActive)
                         
-                        if !isBlackKey {
-                            Text(noteName)
-                                .font(.system(size: 8, weight: .medium))
-                                .foregroundColor(.black.opacity(0.7))
-                                .offset(x: 35, y: 0)
+                        Group {
+                            if !isBlackKey {
+                                Text(noteName)
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundColor(.black.opacity(0.7))
+                                    .offset(x: 35, y: 0)
+                            }
                         }
                     }
                 }
