@@ -5,10 +5,56 @@ struct HomeView: View {
     @StateObject private var vm = TranscriptionViewModel()
     @StateObject private var globalPlayer = GlobalAudioPlayerModel()
     @State private var showImporter = false
+    @State private var showErrorDetails = false
 
     var body: some View {
         NavigationStack {
             List {
+                // Network and Server Status Section
+                Section("Connection Status") {
+                    HStack {
+                        Image(systemName: vm.serverReachable ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(vm.serverReachable ? .green : .red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(vm.serverReachable ? "Server Connected" : "Server Unreachable")
+                                .font(.headline)
+                            Text("Network: \(vm.networkStatus)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Refresh") {
+                            Task { await vm.refreshServerStatus() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(vm.isUploading || vm.isSeparating)
+                    }
+                    
+                    if let errorMsg = vm.errorMessage {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Error")
+                                    .font(.headline)
+                                Spacer()
+                                Button("Clear") {
+                                    vm.clearErrors()
+                                }
+                                .buttonStyle(.bordered)
+                                Button("Details") {
+                                    showErrorDetails = true
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            Text(errorMsg)
+                                .font(.body)
+                                .foregroundColor(.red)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
                 Section("Selected audio") {
                     if let url = vm.selectedFileURL {
                         VStack(alignment: .leading, spacing: 8) {
@@ -22,86 +68,109 @@ struct HomeView: View {
                                     .contentShape(Rectangle())
                                     .onTapGesture { /* consume taps */ }
                             }
-                            VStack(alignment: .leading, spacing: 8) {
-                                Toggle("Use PTI (higher quality)", isOn: $vm.usePTI)
-                                Picker("Quality", selection: $vm.profile) {
-                                    Text("Fast").tag("fast")
-                                    Text("Balanced").tag("balanced")
-                                    Text("Accurate").tag("accurate")
-                                }.pickerStyle(.segmented)
+                                    VStack(alignment: .leading, spacing: 8) {
+            Text("Transcription Mode:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            
+            Picker("Transcription Quality", selection: $vm.transcriptionMode) {
+                Text("Pure Basic Pitch").tag("pure")
+                Text("Hybrid").tag("hybrid")
+                Text("AI Enhanced").tag("enhanced")
+            }.pickerStyle(.segmented)
+            
+            Text(vm.transcriptionMode == "pure" ? "Website-style output with no post-processing" : 
+                 vm.transcriptionMode == "hybrid" ? "Basic Pitch + AI enhancement (MUCH SHARPER + light cleanup + chord filling)" :
+                 "Enhanced with quantization, humanization, and AI refinement")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                                
                                 HStack {
-                                    Toggle("Remove vocals (Demucs)", isOn: $vm.useDemucs)
                                     Spacer()
-                                    Button(vm.isUploading ? "Processing…" : (vm.usePTI ? "Transcribe (PTI)" : "Convert")) {
+                                    Button(vm.isUploading ? "Processing…" : "Convert to MIDI") {
                                         vm.startTranscription()
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(vm.isUploading)
+                                    .disabled(vm.isUploading || !vm.serverReachable)
                                     Button("Stop") { vm.cancelCurrentWork() }
                                     .disabled(!(vm.isUploading || vm.isSeparating))
                                 }
-                                HStack(spacing: 12) {
-                                    Menu {
-                                        Button("Robust (Auto/HQ)") {
-                                            vm.startSeparation(fast: false)
-                                        }
-                                        Button("Fast (Local)") {
-                                            vm.startSeparation(fast: true)
-                                        }
-                                        Button("Great (HQ + Enhance)") {
-                                            // Calls server with mode=great&enhance=true implicitly via default path
-                                            Task { await vm.runSeparation(fast: false) }
-                                            vm.infoMessage = "Running HQ separation with enhancement…"
-                                        }
-                                        Divider()
-                                        Button("Hosted Spleeter (API)") {
-                                            vm.startSeparation(viaAPI: true)
-                                        }
-                                        Button("Hosted Spleeter – Vocals only") {
-                                            vm.startSeparation(viaAPI: true, vocalsOnly: true)
-                                        }
-                                        Button("Local Spleeter (CLI)") {
-                                            vm.startSeparation(viaAPI: true, localSpleeter: true)
-                                        }
-                                    } label: {
-                                        Label("Separate Vocals/Music", systemImage: "wand.and.stars")
+                                VStack(spacing: 8) {
+                                    HStack {
+                                        Text("Audio Separation:")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
                                     }
-                                    .disabled(vm.selectedFileURL == nil || vm.isSeparating)
-                                    if let backend = vm.separationBackend {
-                                        Text("Backend: \(backend.replacingOccurrences(of: "_", with: " "))")
+                                    
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Separation: High Quality (Demucs)")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
-                                }
-                                HStack(spacing: 12) {
-                                    Button("Melody → Piano (DDSP-style)") {
-                                        Task { await vm.ddspMelodyToPiano() }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    Button("Cover (HQ chords)") {
-                                        Task { await vm.coverHQ() }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    Menu {
-                                        Picker("Style", selection: $vm.coverStyle) {
-                                            Text("Block chords").tag("block")
-                                            Text("Arpeggio").tag("arpeggio")
-                                            Text("Alberti").tag("alberti")
+                                    
+                                    HStack(spacing: 12) {
+                                        Button(vm.isSeparating ? "Separating..." : "Separate Vocals/Music") {
+                                            vm.startSeparation()
                                         }
-                                        Button("Generate cover in selected style") {
-                                            Task { await vm.coverStyleRun() }
+                                        .buttonStyle(.borderedProminent)
+                                        .disabled(vm.selectedFileURL == nil || vm.isSeparating || !vm.serverReachable)
+                                        
+                                        if vm.isSeparating {
+                                            ProgressView()
+                                                .scaleEffect(0.8)
                                         }
-                                    } label: {
-                                        Label("Cover (style)", systemImage: "pianokeys")
+                                        
+                                        if let backend = vm.separationBackend {
+                                            Text("Using: \(backend.replacingOccurrences(of: "_", with: " "))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    
+                                    // Show separation success message
+                                    if vm.instrumentalURL != nil || vm.vocalsURL != nil {
+                                        HStack {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.green)
+                                            Text("Separation completed! Both vocal and instrumental tracks are ready.")
+                                                .font(.caption)
+                                                .foregroundColor(.green)
+                                            Spacer()
+                                        }
+                                        .padding(.vertical, 4)
+                                        .padding(.horizontal, 8)
+                                        .background(Color.green.opacity(0.1))
+                                        .cornerRadius(6)
+                                    }
+                                    
+                                    // Show separation source info
+                                    if let source = vm.separationSource {
+                                        HStack {
+                                            Image(systemName: source.contains("cloud") ? "cloud.fill" : "cpu")
+                                                .foregroundColor(source.contains("cloud") ? .blue : .green)
+                                            Text("Processing: \(source.replacingOccurrences(of: "_", with: " "))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            Spacer()
+                                        }
+                                    }
+                                    
+                                    if let cloudModel = vm.separationCloudModel {
+                                        HStack {
+                                            Image(systemName: "cpu.fill")
+                                                .foregroundColor(.blue)
+                                            Text("Model: \(cloudModel)")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            Spacer()
+                                        }
                                     }
                                 }
+
                                 if let msg = vm.infoMessage { Text(msg).font(.caption).foregroundStyle(.secondary) }
                                 if let t = vm.progressText { Text(t).font(.caption).foregroundStyle(.secondary) }
-                                if vm.usePTI {
-                                    Text("Demucs is ignored when PTI is enabled.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+
                             }
                         }
                     } else {
@@ -111,7 +180,7 @@ struct HomeView: View {
 
                 if let midi = vm.midiLocalURL {
                     Section("Result") {
-                        NavigationLink(destination: DetailView(vm: vm)) {
+                        NavigationLink(destination: DetailViewWithLivePlayer(vm: vm)) {
                             VStack(alignment: .leading) {
                                 Text("MIDI ready: \(midi.lastPathComponent)")
                                 if let notes = vm.notesCount, let dur = vm.durationSec {
@@ -119,39 +188,87 @@ struct HomeView: View {
                                 }
                             }
                         }
+                        
+
                     }
                 }
 
                 if vm.instrumentalURL != nil || vm.vocalsURL != nil {
                     Section("Separated tracks") {
-                        if let i = vm.instrumentalURL {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Instrumental")
-                                AudioPreview(url: i)
-                                    .environmentObject(globalPlayer)
-                                HStack {
-                                    Button("Use instrumental for transcription") {
-                                        vm.setSelectedFile(i)
-                                    }
-                                    Button("Convert instrumental → MIDI") {
-                                        Task { await vm.convertInstrumentalToMIDI() }
-                                    }
-                                }
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Separation completed successfully!")
+                                .font(.headline)
+                                .foregroundColor(.green)
+                            
+                            // Debug info
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Debug Info:")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("instrumentalURL: \(vm.instrumentalURL?.absoluteString ?? "nil")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text("vocalsURL: \(vm.vocalsURL?.absoluteString ?? "nil")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
-                        }
-                        if let v = vm.vocalsURL {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Vocals")
-                                AudioPreview(url: v)
-                                    .environmentObject(globalPlayer)
-                                HStack {
-                                    Button("Use vocals for transcription") {
-                                        vm.setSelectedFile(v)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(4)
+                            
+                            if let i = vm.instrumentalURL {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Image(systemName: "music.note.list")
+                                            .foregroundColor(.blue)
+                                        Text("Instrumental (Music without vocals)")
+                                            .font(.headline)
                                     }
-                                    Button("Convert vocals → MIDI") {
-                                        Task { await vm.convertVocalsToMIDI() }
+                                    AudioPreview(url: i)
+                                        .environmentObject(globalPlayer)
+                                    HStack {
+                                        Button("Use instrumental for transcription") {
+                                            vm.setSelectedFile(i)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        Button("Convert instrumental → MIDI") {
+                                            Task { await vm.convertInstrumentalToMIDI() }
+                                        }
+                                        .buttonStyle(.borderedProminent)
                                     }
                                 }
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                            
+                            if let v = vm.vocalsURL {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Image(systemName: "person.wave.2")
+                                            .foregroundColor(.purple)
+                                        Text("Vocals (Voice only)")
+                                            .font(.headline)
+                                    }
+                                    AudioPreview(url: v)
+                                        .environmentObject(globalPlayer)
+                                    HStack {
+                                        Button("Use vocals for transcription") {
+                                            vm.setSelectedFile(v)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        Button("Convert vocals → MIDI") {
+                                            Task { await vm.convertVocalsToMIDI() }
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+                                }
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(Color.purple.opacity(0.1))
+                                .cornerRadius(8)
                             }
                         }
                     }
@@ -173,26 +290,30 @@ struct HomeView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button("Select Audio") { showImporter = true }
-                        Button("Use Local Server (127.0.0.1:8000)") {
-                            Config.setServerBaseURL("http://127.0.0.1:8000")
+                        Button("Refresh Server Status") {
+                            Task { await vm.refreshServerStatus() }
                         }
-                        Button("Use Full Server (127.0.0.1:8010)") {
-                            Config.setServerBaseURL("http://127.0.0.1:8010")
-                        }
-                        Button("Use LAN Server…") {
-                            // Prompt via alert
-                            let alert = UIAlertController(title: "Server URL", message: "Enter http://<IP>:8000", preferredStyle: .alert)
-                            alert.addTextField { tf in tf.text = UserDefaults.standard.string(forKey: "server_url") ?? "http://" }
-                            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-                            alert.addAction(UIAlertAction(title: "Set", style: .default, handler: { _ in
-                                if let t = alert.textFields?.first?.text, !t.isEmpty { Config.setServerBaseURL(t) }
-                            }))
-                            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first?.keyWindow?.rootViewController?.present(alert, animated: true)
+                        Button("Clear Errors") {
+                            vm.clearErrors()
                         }
                     } label: {
                         Label("Actions", systemImage: "ellipsis.circle")
                     }
                 }
+            }
+            // Show current backend at a glance for debugging
+            .safeAreaInset(edge: .top) {
+                HStack {
+                    Text("Server: \(UserDefaults.standard.string(forKey: "server_url") ?? Config.serverBaseURL.absoluteString)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial)
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 8) {
@@ -226,6 +347,60 @@ struct HomeView: View {
             Button("OK") { vm.errorMessage = nil }
         } message: {
             Text(vm.errorMessage ?? "Unknown error")
+        }
+        .sheet(isPresented: $showErrorDetails) {
+            ErrorDetailsView(errorDetails: vm.lastErrorDetails ?? "No detailed error information available")
+        }
+    }
+}
+
+struct ErrorDetailsView: View {
+    let errorDetails: String
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Error Details")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    
+                    Text("This information can help debug connection issues:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Text(errorDetails)
+                        .font(.system(.body, design: .monospaced))
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Common Issues:")
+                            .font(.headline)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("• Server not running")
+                            Text("• Wrong IP address or port")
+                            Text("• Firewall blocking connection")
+                            Text("• Network configuration issues")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Error Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }

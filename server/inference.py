@@ -2,6 +2,7 @@ import os
 import math
 import uuid
 import tempfile
+import time
 from typing import Optional, Dict
 
 import numpy as np
@@ -13,6 +14,10 @@ import shutil
 import bisect
 import httpx
 import json as _json
+try:
+    import replicate as _rep  # optional, for cloud-enhanced transcription/performance
+except Exception:
+    _rep = None
 
 # Basic Pitch
 # Lazily import Basic Pitch inside the function to avoid hard TensorFlow/CoreML
@@ -292,89 +297,8 @@ def _refine_midi_against_audio(pm: pretty_midi.PrettyMIDI, audio_path: str, bpm:
         pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=max_poly)
     return pm
 
-# --- Optional high-quality piano transcription using piano_transcription_inference ---
-def transcribe_to_midi_pti(
-    input_wav_path: str,
-    output_mid_path: str,
-    bpm_hint: Optional[float] = None,
-    humanize: bool = True,
-    add_sustain: bool = True,
-    use_demucs: bool = False,
-) -> Dict[str, Optional[float]]:
-    """
-    High-quality piano transcription using the "piano_transcription_inference" package
-    (Onsets & Frames, Kong et al.). This typically produces fewer extra notes and
-    fewer misses on solo piano than Basic Pitch.
-
-    Returns dict: { "notes": int, "duration_sec": float, "bpm_estimate": float | None }
-    """
-    try:
-        # Librosa 0.10 compatibility shim for PTI which references librosa.core.audio.util
-        try:
-            import librosa  # type: ignore
-            import types as _types  # type: ignore
-            if hasattr(librosa, "core"):
-                # Create shim namespace if missing
-                if not hasattr(librosa.core, "audio"):
-                    setattr(librosa.core, "audio", _types.SimpleNamespace())
-                # Map functions expected by PTI to modern locations
-                la = librosa.core.audio
-                if not hasattr(la, "util"):
-                    setattr(la, "util", _types.SimpleNamespace())
-                if getattr(la.util, "buf_to_float", None) is None:
-                    setattr(la.util, "buf_to_float", getattr(librosa.util, "buf_to_float", None))
-                if getattr(la, "to_mono", None) is None:
-                    setattr(la, "to_mono", getattr(librosa, "to_mono", None))
-                if getattr(la, "resample", None) is None:
-                    setattr(la, "resample", getattr(librosa, "resample", None))
-        except Exception:
-            pass
-
-        # Import lazily so the dependency is optional
-        from piano_transcription_inference import PianoTranscription, sample_rate  # type: ignore
-    except Exception as e:
-        raise RuntimeError(
-            "piano_transcription_inference is not installed. Install with: \n"
-            "  pip install 'piano-transcription-inference torch torchaudio'\n"
-            f"Import error: {e}"
-        )
-
-    # Load audio using librosa directly to avoid PTI's librosa<0.10 API expectations
-    import librosa as _lb  # type: ignore
-    path_for_pti = input_wav_path
-    if use_demucs:
-        try:
-            path_for_pti = _maybe_run_demucs(input_wav_path)
-        except Exception:
-            path_for_pti = input_wav_path
-    audio, sr = _lb.load(path_for_pti, sr=sample_rate, mono=True)
-    bpm_estimate = bpm_hint if bpm_hint is not None else _estimate_bpm(audio, sr)
-
-    # Run model on CPU by default (fast enough for short clips). Use device='mps' for Apple Silicon if desired.
-    model = PianoTranscription(device='cpu')
-    model.transcribe(audio, output_mid_path)
-
-    # Post-process for musicality and cleanliness
-    pm = pretty_midi.PrettyMIDI(output_mid_path)
-    pm = _post_process_midi(
-        pm,
-        bpm_estimate,
-        humanize_timing_sec=0.012 if humanize else 0.0,
-        humanize_velocity_range=5 if humanize else 0,
-        add_sustain=add_sustain,
-    )
-    pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=3)
-    pm = _limit_pitch_and_length(pm, pitch_min=36, pitch_max=96, min_duration_sec=0.06)
-    pm.write(output_mid_path)
-
-    pm_final = pretty_midi.PrettyMIDI(output_mid_path)
-    total_notes = sum(len(inst.notes) for inst in pm_final.instruments)
-    duration_sec = pm_final.get_end_time()
-    return {
-        "notes": float(total_notes),
-        "duration_sec": float(duration_sec),
-        "bpm_estimate": float(bpm_estimate) if bpm_estimate is not None else None,
-    }
+# PTI feature removed - it was not producing good results
+# Pure Basic Pitch is now the only high-quality option
 
 
 def _merge_midis_union(
@@ -518,7 +442,7 @@ def _maybe_run_demucs(input_wav_path: str) -> str:
 
 def separate_audio(input_wav_path: str) -> tuple[str, str | None]:
     """
-    Run Demucs source separation and return a tuple: (instrumental_wav, vocals_wav|None).
+    Run Demucs source separation with balanced quality settings and return a tuple: (instrumental_wav, vocals_wav|None).
     Prefers 'other.wav' as instrumental, and 'vocals.wav' if available.
     If separation fails, returns the original path and None.
     """
@@ -526,10 +450,12 @@ def separate_audio(input_wav_path: str) -> tuple[str, str | None]:
     try:
         tmp_out = tempfile.mkdtemp(prefix="demucs_")
         if demucs_bin:
-            cmd = [demucs_bin, "-n", "htdemucs", "-o", tmp_out, input_wav_path]
+            # Use balanced quality settings: default overlap (0.75) and shifts (1)
+            # Increase overlap slightly for quality, but remain reasonable for CPU
+            cmd = [demucs_bin, "-n", "htdemucs", "--overlap", "0.9", "--shifts", "1", "-o", tmp_out, input_wav_path]
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         elif HAS_DEMUCS:
-            demucs.separate.main(["-n", "htdemucs", "-o", tmp_out, input_wav_path])
+            demucs.separate.main(["-n", "htdemucs", "--overlap", "0.75", "--shifts", "1", "-o", tmp_out, input_wav_path])
         else:
             return input_wav_path, None
 
@@ -538,6 +464,43 @@ def separate_audio(input_wav_path: str) -> tuple[str, str | None]:
         for root, _, files in os.walk(tmp_out):
             if "other.wav" in files:
                 inst = os.path.join(root, "other.wav")
+            if "vocals.wav" in files:
+                voc = os.path.join(root, "vocals.wav")
+        if inst is None:
+            # fallback to any wav as instrumental
+            for root, _, files in os.walk(tmp_out):
+                for f in files:
+                    if f.lower().endswith('.wav'):
+                        inst = os.path.join(root, f)
+                        break
+                if inst:
+                    break
+        return inst or input_wav_path, voc
+    except Exception:
+        return input_wav_path, None
+
+
+def separate_audio_mdx23(input_wav_path: str) -> tuple[str, str | None]:
+    """
+    High-quality MDX23 separation for 2-stem output.
+    Returns (instrumental_wav, vocals_wav|None).
+    """
+    demucs_bin = shutil.which("demucs")
+    try:
+        tmp_out = tempfile.mkdtemp(prefix="mdx23_")
+        if demucs_bin:
+            cmd = [demucs_bin, "-n", "mdx23", "-o", tmp_out, input_wav_path]
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        elif HAS_DEMUCS:
+            demucs.separate.main(["-n", "mdx23", "-o", tmp_out, input_wav_path])
+        else:
+            return input_wav_path, None
+
+        inst: Optional[str] = None
+        voc: Optional[str] = None
+        for root, _, files in os.walk(tmp_out):
+            if "accompaniment.wav" in files:
+                inst = os.path.join(root, "accompaniment.wav")
             if "vocals.wav" in files:
                 voc = os.path.join(root, "vocals.wav")
         if inst is None:
@@ -623,34 +586,90 @@ def separate_audio_fast(input_wav_path: str) -> tuple[str, str]:
                 # If more channels, collapse to stereo
                 y = _np.vstack([y[0, :], y[1, :]])
             L, R = y[0], y[1]
-            mid = 0.5 * (L + R)
-            # Subtract mid to suppress centered vocals
-            inst_L = L - mid
-            inst_R = R - mid
-            # Vocals approximation as mid duplicated
-            voc_L = mid
-            voc_R = mid
-            inst = _np.stack([inst_L, inst_R], axis=0)
-            voc = _np.stack([voc_L, voc_R], axis=0)
-            # Normalize to avoid clipping
-            def _norm(x):
-                m = _np.max(_np.abs(x))
-                return x / m if m > 1.0 else x
-            inst = _norm(inst)
-            voc = _norm(voc)
+            # Mid = vocals (center channel), Side = instrumental
+            mid = (L + R) / 2
+            side = (L - R) / 2
+            # Write to temp files
             inst_path = tempfile.mkstemp(suffix="_inst_fast.wav")[1]
             voc_path = tempfile.mkstemp(suffix="_voc_fast.wav")[1]
-            _sf.write(inst_path, inst.T, sr)
-            _sf.write(voc_path, voc.T, sr)
+            _sf.write(inst_path, side, sr)
+            _sf.write(voc_path, mid, sr)
             return inst_path, voc_path
-    except Exception:
-        # Fallback: return original as instrumental, and duplicate as vocals
-        voc_path = tempfile.mkstemp(suffix="_voc_fast.wav")[1]
-        try:
-            shutil.copy(input_wav_path, voc_path)
-        except Exception:
-            pass
-        return input_wav_path, voc_path
+    except Exception as e:
+        raise RuntimeError(f"Fast separation failed: {e}")
+
+
+def separate_audio_spleeter_fast(input_wav_path: str) -> tuple[str, str]:
+    """Separate audio using Spleeter 2-stem model via subprocess call to virtual environment."""
+    try:
+        # Use subprocess to call Spleeter from the virtual environment
+        spleeter_venv_python = "/Users/raniyaqoob/Desktop/PianoMaker/.spleeter-venv/bin/python"
+        if not os.path.exists(spleeter_venv_python):
+            raise RuntimeError("Spleeter virtual environment not found")
+        
+        # Create output directory
+        output_dir = tempfile.mkdtemp(prefix="spleeter_fast_")
+        
+        # Run Spleeter via subprocess
+        cmd = [
+            spleeter_venv_python, "-m", "spleeter", "separate",
+            "-p", "spleeter:2stems",
+            "-o", output_dir,
+            input_wav_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        # Get output file paths
+        base_name = os.path.splitext(os.path.basename(input_wav_path))[0]
+        inst_path = os.path.join(output_dir, base_name, "accompaniment.wav")
+        voc_path = os.path.join(output_dir, base_name, "vocals.wav")
+        
+        if not os.path.exists(inst_path) or not os.path.exists(voc_path):
+            raise RuntimeError(f"Spleeter did not produce expected output files. Stdout: {result.stdout}, Stderr: {result.stderr}")
+        
+        return inst_path, voc_path
+        
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Spleeter failed: {e.stderr}")
+    except Exception as e:
+        raise RuntimeError(f"Spleeter failed: {e}")
+
+def separate_audio_spleeter_hq(input_wav_path: str) -> tuple[str, str]:
+    """Separate audio using Spleeter 4-stem model via subprocess call to virtual environment."""
+    try:
+        # Use subprocess to call Spleeter from the virtual environment
+        spleeter_venv_python = "/Users/raniyaqoob/Desktop/PianoMaker/.spleeter-venv/bin/python"
+        if not os.path.exists(spleeter_venv_python):
+            raise RuntimeError("Spleeter virtual environment not found")
+        
+        # Create output directory
+        output_dir = tempfile.mkdtemp(prefix="spleeter_hq_")
+        
+        # Run Spleeter via subprocess
+        cmd = [
+            spleeter_venv_python, "-m", "spleeter", "separate",
+            "-p", "spleeter:4stems",
+            "-o", output_dir,
+            input_wav_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        # Get output file paths
+        base_name = os.path.splitext(os.path.basename(input_wav_path))[0]
+        inst_path = os.path.join(output_dir, base_name, "accompaniment.wav")
+        voc_path = os.path.join(output_dir, base_name, "vocals.wav")
+        
+        if not os.path.exists(inst_path) or not os.path.exists(voc_path):
+            raise RuntimeError(f"Spleeter did not produce expected output files. Stdout: {result.stdout}, Stderr: {result.stderr}")
+        
+        return inst_path, voc_path
+        
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Spleeter failed: {e.stderr}")
+    except Exception as e:
+        raise RuntimeError(f"Spleeter failed: {e}")
 
 
 def separate_audio_umx(input_wav_path: str) -> tuple[str, str | None]:
@@ -851,9 +870,15 @@ def separate_audio_great(input_wav_path: str, enhance: bool = True) -> tuple[str
                 "-o", tmp_out,
                 input_wav_path,
             ]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # Add timeout to prevent hanging (10 minutes max)
+            try:
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+            except subprocess.TimeoutExpired:
+                print(f"Demucs process timed out after 10 minutes for {input_wav_path}")
+                raise RuntimeError("Demucs separation timed out after 10 minutes")
         elif HAS_DEMUCS:
             # Python entry – no direct two-stems flag reliably; fall back to standard HQ
+            # Note: Python demucs doesn't have built-in timeout, but the job runner will handle it
             demucs.separate.main(["-n", "htdemucs", "-o", tmp_out, input_wav_path])
         else:
             return input_wav_path, None
@@ -1042,14 +1067,11 @@ def transcribe_to_midi(
         try:
             from basic_pitch.inference import predict_and_save, ICASSP_2022_MODEL_PATH  # type: ignore
         except Exception:
-            # If Basic Pitch import fails, transparently fall back to PTI
-            return transcribe_to_midi_pti(
-                separated_wav,
-                output_mid_path,
-                bpm_hint=bpm_estimate,
-                humanize=humanize,
-                add_sustain=add_sustain,
-                use_demucs=False,
+            # If Basic Pitch import fails, raise error (PTI removed)
+            raise RuntimeError(
+                "Basic Pitch is not installed. Install with: \n"
+                "  pip install basic-pitch\n"
+                "PTI fallback has been removed as it was not producing good results."
             )
         # Call Basic Pitch with a version-tolerant wrapper (supports 0.3.x and >=0.4.x)
         try:
@@ -1058,7 +1080,7 @@ def transcribe_to_midi(
             )
         except TypeError:
             predict_and_save(
-                [separated_wav], True, False, False, ICASSP_2022_MODEL_PATH, tmpdir,
+                [separated_wav], True, False, False, False, ICASSP_2022_MODEL_PATH, tmpdir,
             )
 
         # Find the produced MIDI file
@@ -1086,8 +1108,9 @@ def transcribe_to_midi(
             poly_cap = 2
             min_dur = 0.07
         else:  # balanced
-            human_timing = 0.015 if humanize else 0.0
-            human_vel = 6 if humanize else 0
+            # Make default output sharper and louder without losing accuracy
+            human_timing = 0.012 if humanize else 0.0
+            human_vel = 10 if humanize else 0
             sustain_flag = add_sustain
             poly_cap = 3
             min_dur = 0.06
@@ -1102,21 +1125,13 @@ def transcribe_to_midi(
         pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=poly_cap)
         pm = _limit_pitch_and_length(pm, pitch_min=36, pitch_max=96, min_duration_sec=min_dur)
 
-        # For "accurate" profile, merge with a PTI pass to fill gaps and refine vs audio
+        # For "accurate" profile, use enhanced post-processing (PTI removed)
         if prof == "accurate":
-            try:
-                tmp_mid = tempfile.mkstemp(suffix=".mid")[1]
-                _ = transcribe_to_midi_pti(separated_wav, tmp_mid, bpm_hint=bpm_estimate, humanize=False, add_sustain=False, use_demucs=False)
-                pm_pti = pretty_midi.PrettyMIDI(tmp_mid)
-                pm = _merge_midis_union(pm, pm_pti, onset_window_sec=0.03, dedup_window_sec=0.02)
-                # Audio-guided refine
-                pm = _refine_midi_against_audio(pm, separated_wav, bpm=bpm_estimate or 120.0, max_poly=poly_cap)
-                # Re-clean after merge
-                pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=poly_cap)
-                pm = _limit_pitch_and_length(pm, pitch_min=36, pitch_max=96, min_duration_sec=min_dur)
-                os.remove(tmp_mid)
-            except Exception:
-                pass
+            # Enhanced post-processing without PTI merge
+            pm = _refine_midi_against_audio(pm, separated_wav, bpm=bpm_estimate or 120.0, max_poly=poly_cap)
+            # Re-clean after refine
+            pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=poly_cap)
+            pm = _limit_pitch_and_length(pm, pitch_min=36, pitch_max=96, min_duration_sec=min_dur)
 
         # Ensure only one piano instrument remains
         if pm.instruments:
@@ -1198,17 +1213,21 @@ def _ensure_salamander_sfz(extract_from_root_tar: bool = True) -> Optional[str]:
 
 
 def _master_wav_inplace(wav_path: str) -> None:
-    """Apply light mastering with sox if available (reverb/EQ/compression)."""
+    """Apply clarity-focused mastering with sox if available (HPF/EQ/comp/limiter)."""
     tmp = wav_path + ".tmp.wav"
     try:
-        # sox input output effects: reverb, compand, eq, gain
-        # Reverb room size ~ 20, compand gentle, slight high shelf
+        # sox input output effects:
+        # - highpass to remove rumble
+        # - two gentle EQ boosts for presence/air
+        # - gentle compander to tame peaks
+        # - normalize to prevent clipping and keep loudness
         cmd = [
             "sox", wav_path, tmp,
-            "reverb", "20",
-            "compand", "0.1,0.2", "-60,-60,-30,-20,-10,-6,0,-1", "-5", "-90", "0.2",
-            "equalizer", "3000", "1.0q", "+2",
-            "gain", "-n", "-3",
+            "highpass", "35",
+            "equalizer", "3500", "1.0q", "+4",
+            "equalizer", "8000", "0.8q", "+2",
+            "compand", "0.1,0.25", "-60,-60,-30,-20,-10,-6,0,-2", "-6", "-90", "0.2",
+            "gain", "-n", "-0.5",
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         os.replace(tmp, wav_path)
@@ -1242,7 +1261,8 @@ def render_midi_to_wav(midi_path: str, out_wav_path: str, preferred_bank: Option
             "-o", "synth.chorus.active=1",
             "-o", "synth.chorus.level=3.0",
             "-o", "synth.polyphony=256",
-            "-g", "0.6",
+            # Louder, sharper render while keeping headroom
+            "-g", "0.9",
         ]
     else:  # basic
         rate = "44100"
@@ -1271,7 +1291,7 @@ def _accent_for_beat_index(beat_idx: int, time_signature_numerator: int = 4) -> 
 
 def expressive_enhance_midi(pm: pretty_midi.PrettyMIDI,
                              humanize_timing_sec: float = 0.015,
-                             humanize_velocity_range: int = 8,
+                             humanize_velocity_range: int = 10,
                              sustain: bool = True) -> pretty_midi.PrettyMIDI:
     """Algorithmic expressive performance: accents, humanization, legato, sustain."""
     beats = pm.get_beats()
@@ -1357,6 +1377,107 @@ def perform_midi_ml(input_mid_path: str, output_mid_path: str, performer_url: st
         raise RuntimeError(f"Failed to call performer service at {performer_url}: {e}")
     with open(output_mid_path, "wb") as f:
         f.write(out_bytes)
+
+
+def perform_audio_cloud(
+    input_wav_path: str,
+    output_wav_path: str,
+    reference_wav_paths: Optional[list[str]] = None,
+    model_slug: Optional[str] = None,
+) -> None:
+    """
+    Send WAV (rendered from MIDI) to a cloud mastering/performance model via Replicate.
+    - Cloud-only (requires REPLICATE_API_TOKEN); raises on failure, no fallback.
+    - Optionally uploads 1-3 reference WAVs to steer presence/brightness.
+    - Writes mastered/performed WAV to output_wav_path.
+    Environment overrides:
+      REPLICATE_PERFORM_MODEL (default: riffusion/audio-mastering or another provided slug)
+    """
+    if _rep is None or not os.environ.get("REPLICATE_API_TOKEN"):
+        raise RuntimeError("Cloud performance requires Replicate API token; no local fallback.")
+
+    # Choose model slug
+    slug = model_slug or os.environ.get("REPLICATE_PERFORM_MODEL") or "riffusion/audio-mastering"
+
+    client = _rep.Client(api_token=os.environ.get("REPLICATE_API_TOKEN"))
+    # Upload main audio
+    up = client.files.create(input_wav_path)
+    audio_url = up.urls["get"]
+
+    # Upload references (best effort)
+    ref_urls: list[str] = []
+    if reference_wav_paths:
+        for p in reference_wav_paths[:3]:
+            try:
+                upref = client.files.create(p)
+                ref_urls.append(upref.urls["get"])
+            except Exception:
+                continue
+
+    # Get model version
+    model = client.models.get(slug)
+    version_id = model.latest_version.id
+
+    # Build input. Different models have different schemas; try common fields.
+    # Primary attempt: generic mastering with optional references/strength.
+    candidate_inputs = [
+        {"audio": audio_url, "references": ref_urls, "strength": 0.85},
+        {"audio": audio_url, "reference": (ref_urls[0] if ref_urls else None), "amount": 0.8},
+        {"audio": audio_url},
+    ]
+
+    pred = None
+    last_err: Optional[Exception] = None
+    for i, inp in enumerate(candidate_inputs):
+        # Remove None values
+        clean_inp = {k: v for k, v in inp.items() if v}
+        try:
+            pred = client.predictions.create(version=version_id, input=clean_inp)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if pred is None:
+        if last_err:
+            raise RuntimeError(f"Failed to start cloud performance: {last_err}")
+        raise RuntimeError("Failed to start cloud performance")
+
+    # Poll until done
+    deadline = time.time() + 900
+    while pred.status not in ("succeeded", "failed", "canceled"):
+        if time.time() > deadline:
+            raise TimeoutError("Cloud performance timed out")
+        time.sleep(2)
+        pred = client.predictions.get(pred.id)
+
+    if pred.status != "succeeded":
+        raise RuntimeError(f"Cloud performance failed: {pred.status}")
+
+    # Output can be a URL or dict/list – try to fetch a WAV/Audio URL
+    out_url: Optional[str] = None
+    if isinstance(pred.output, str) and pred.output.startswith("http"):
+        out_url = pred.output
+    elif isinstance(pred.output, dict):
+        for k in ("audio", "output", "result", "mastered_audio"):
+            v = pred.output.get(k)
+            if isinstance(v, str) and v.startswith("http"):
+                out_url = v
+                break
+    elif isinstance(pred.output, list):
+        for v in pred.output:
+            if isinstance(v, str) and v.startswith("http"):
+                out_url = v
+                break
+    if not out_url:
+        raise RuntimeError("Cloud performance returned no downloadable audio URL")
+
+    # Download the mastered/performed audio
+    import requests as _rq
+    r = _rq.get(out_url, timeout=180)
+    r.raise_for_status()
+    with open(output_wav_path, "wb") as f:
+        f.write(r.content)
 
 
 def _find_sfz(preferred_name: Optional[str] = None) -> Optional[str]:
@@ -1590,9 +1711,9 @@ def _arrange_piano_chords(pm_in: pretty_midi.PrettyMIDI, bpm: float | None = Non
 
 
 def piano_cover_from_audio_hq(input_wav_path: str, output_mid_path: str, use_demucs: bool = False) -> Dict[str, Optional[float]]:
-    # Transcribe with PTI for accuracy
+    # PTI removed - use Basic Pitch instead
     tmp_mid = tempfile.mkstemp(suffix=".mid")[1]
-    stats = transcribe_to_midi_pti(input_wav_path, tmp_mid, use_demucs=use_demucs)
+    stats = transcribe_to_midi(input_wav_path, tmp_mid, use_demucs=use_demucs, profile="fast")
     pm = pretty_midi.PrettyMIDI(tmp_mid)
     pm_out = _arrange_piano_chords(pm, bpm=stats.get("bpm_estimate") or 120.0)
     pm_out.write(output_mid_path)
@@ -1684,8 +1805,8 @@ def piano_cover_from_audio_style(
     style: str = "block",
     use_demucs: bool = False,
 ) -> Dict[str, Optional[float]]:
-    tmp_mid = tempfile.mkstemp(suffix=".mid")[1]
-    stats = transcribe_to_midi_pti(input_wav_path, tmp_mid, use_demucs=use_demucs)
+    # PTI removed - use Basic Pitch instead
+    stats = transcribe_to_midi(input_wav_path, tmp_mid, use_demucs=use_demucs, profile="fast")
     pm = pretty_midi.PrettyMIDI(tmp_mid)
     pm_out = _arrange_piano_style(pm, bpm=stats.get("bpm_estimate") or 120.0, style=style)
     pm_out.write(output_mid_path)
@@ -1699,4 +1820,505 @@ def piano_cover_from_audio_style(
         "duration_sec": float(pm_final.get_end_time()),
         "bpm_estimate": stats.get("bpm_estimate"),
     }
+
+
+# --- Pure Basic Pitch (website-style output) ---
+def transcribe_to_midi_pure_basic_pitch(
+    input_wav_path: str,
+    output_mid_path: str,
+    use_demucs: bool = False,
+) -> Dict[str, Optional[float]]:
+    """
+    Pure Basic Pitch transcription - EXACTLY like the website.
+    NO AI post-processing, NO quantization, NO humanization, NO demucs.
+    Just the raw Basic Pitch output for maximum authenticity.
+    
+    Returns dict: { "notes": int, "duration_sec": float, "bpm_estimate": float | None }
+    """
+    # IMPORTANT: Pure mode NEVER uses demucs or any AI processing
+    # This is exactly like the Basic Pitch website
+    separated_wav = input_wav_path  # No demucs in pure mode
+
+    # Use Basic Pitch to produce raw MIDI (no post-processing)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Lazy import to avoid hard dependency at server startup
+        try:
+            from basic_pitch.inference import predict_and_save, ICASSP_2022_MODEL_PATH  # type: ignore
+        except Exception as e:
+            raise RuntimeError(
+                "Basic Pitch is not installed. Install with: \n"
+                "  pip install basic-pitch\n"
+                f"Import error: {e}"
+            )
+        
+        print(f"[PURE BASIC PITCH] Starting transcription of: {input_wav_path}")
+        print(f"[PURE BASIC PITCH] Using ICASSP 2022 model - NO POST-PROCESSING")
+        
+        # Call Basic Pitch with version-tolerant wrapper
+        try:
+            predict_and_save(
+                [separated_wav], tmpdir, True, False, False, False, ICASSP_2022_MODEL_PATH,
+            )
+        except TypeError:
+            predict_and_save(
+                [separated_wav], True, False, False, False, ICASSP_2022_MODEL_PATH, tmpdir,
+            )
+
+        # Find the produced MIDI file
+        midi_candidates = [
+            os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".mid") or f.lower().endswith(".midi")
+        ]
+        if not midi_candidates:
+            raise RuntimeError("Basic Pitch did not produce a MIDI file")
+        temp_midi = midi_candidates[0]
+
+        print(f"[PURE BASIC PITCH] Raw MIDI generated: {temp_midi}")
+        print(f"[PURE BASIC PITCH] Copying raw output - NO MODIFICATIONS")
+
+        # Copy the raw Basic Pitch output directly - NO POST-PROCESSING
+        shutil.copy2(temp_midi, output_mid_path)
+
+    # Load final MIDI for stats only (don't modify it)
+    pm_final = pretty_midi.PrettyMIDI(output_mid_path)
+    total_notes = sum(len(inst.notes) for inst in pm_final.instruments)
+    duration_sec = pm_final.get_end_time()
+    
+    # Estimate BPM from the raw output (no AI, just math)
+    bpm_estimate = _estimate_bpm_from_midi(pm_final)
+
+    print(f"[PURE BASIC PITCH] Completed: {total_notes} notes, {duration_sec:.1f}s duration")
+    print(f"[PURE BASIC PITCH] Output is EXACTLY like the website - no AI processing")
+
+    return {
+        "notes": float(total_notes),
+        "duration_sec": float(duration_sec),
+        "bpm_estimate": float(bpm_estimate) if bpm_estimate is not None else None,
+    }
+
+
+# --- Hybrid Basic Pitch + AI Enhancement ---
+def transcribe_to_midi_hybrid(
+    input_wav_path: str,
+    output_mid_path: str,
+    use_demucs: bool = False,
+) -> Dict[str, Optional[float]]:
+    """
+    Hybrid transcription: Basic Pitch + AI enhancement.
+    Uses Basic Pitch for transcription, then AI for:
+    - MUCH SHARPER MIDI (aggressive velocity boost + velocity shaping)
+    - Very light chord cleanup (keeps most notes)
+    - Enhanced timing and musicality
+    - Sustain enhancement
+    - Light chord filling (adds subtle chords to reduce gaps)
+    - Overall MIDI enhancement while preserving Basic Pitch character
+    
+    Returns dict: { "notes": int, "duration_sec": float, "bpm_estimate": float | None }
+    """
+    # IMPORTANT: Hybrid mode uses Basic Pitch for transcription, AI for enhancement only
+    separated_wav = input_wav_path  # No demucs in hybrid mode
+
+    # Use Basic Pitch to produce raw MIDI (same as Pure mode)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            from basic_pitch.inference import predict_and_save, ICASSP_2022_MODEL_PATH  # type: ignore
+        except Exception as e:
+            raise RuntimeError(
+                "Basic Pitch is not installed. Install with: \n"
+                "  pip install basic-pitch\n"
+                "PTI fallback has been removed as it was not producing good results."
+            )
+        
+        print(f"[HYBRID] Starting Basic Pitch transcription of: {input_wav_path}")
+        print(f"[HYBRID] Using ICASSP 2022 model + AI enhancement")
+        
+        # Call Basic Pitch with version-tolerant wrapper
+        try:
+            predict_and_save(
+                [separated_wav], tmpdir, True, False, False, False, ICASSP_2022_MODEL_PATH,
+            )
+        except TypeError:
+            predict_and_save(
+                [separated_wav], True, False, False, False, ICASSP_2022_MODEL_PATH, tmpdir,
+            )
+
+        # Find the produced MIDI file
+        midi_candidates = [
+            os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".mid") or f.lower().endswith(".midi")
+        ]
+        if not midi_candidates:
+            raise RuntimeError("Basic Pitch did not produce a MIDI file")
+        temp_midi = midi_candidates[0]
+
+        print(f"[HYBRID] Basic Pitch MIDI generated: {temp_midi}")
+        print(f"[HYBRID] Applying AI enhancement: volume boost + chord cleanup")
+
+        # Load the Basic Pitch output for AI enhancement
+        pm = pretty_midi.PrettyMIDI(temp_midi)
+        
+        # AI Enhancement 1: Much sharper velocity boost for louder/more prominent MIDI
+        for inst in pm.instruments:
+            for note in inst.notes:
+                # Boost velocity significantly: make notes much louder and sharper
+                original_velocity = note.velocity
+                # Increase velocity by 40-60% for much more presence and sharpness
+                boosted_velocity = min(127, max(64, int(original_velocity * 1.6)))
+                note.velocity = boosted_velocity
+        
+        # AI Enhancement 2: Very light chord cleanup (less aggressive)
+        pm = _clean_polyphony(pm, onset_window_sec=0.02, max_notes_per_onset=6)  # Much less aggressive
+        
+        # AI Enhancement 3: Enhanced timing and musicality (more noticeable)
+        bpm_estimate = _estimate_bpm_from_midi(pm)
+        pm = _post_process_midi(
+            pm,
+            bpm_estimate,
+            humanize_timing_sec=0.012,  # tighter
+            humanize_velocity_range=10,   # more dynamic shaping
+            add_sustain=True,            # richer
+        )
+        
+        # AI Enhancement 4: Very light note filtering (keep more notes)
+        pm = _limit_pitch_and_length(pm, pitch_min=21, pitch_max=108, min_duration_sec=0.045)  # Keep more notes
+        
+        # AI Enhancement 5: Add subtle velocity shaping for even sharper attack
+        for inst in pm.instruments:
+            for note in inst.notes:
+                # Make notes even sharper by adjusting velocity curve
+                if note.velocity < 80:
+                    # Boost low velocities more for better attack
+                    note.velocity = min(127, int(note.velocity * 1.2))
+                elif note.velocity > 100:
+                    # Slightly boost high velocities for maximum impact
+                    note.velocity = min(127, int(note.velocity * 1.1))
+        
+        # AI Enhancement 6: Light chord filling to reduce gaps
+        pm = _fill_chord_gaps(pm, max_gap_sec=0.8, fill_velocity=60, max_fill_notes=2)
+        
+        # Final cleanup to reduce noise:
+        #  - gate ultra-short/low-velocity notes
+        #  - tighten polyphony per onset
+        #  - light velocity smoothing
+        for inst in pm.instruments:
+            # Gate tiny notes and whisper-velocity artifacts
+            cleaned: list[pretty_midi.Note] = []
+            for n in inst.notes:
+                if (n.end - n.start) >= 0.05 and n.velocity >= 22:
+                    cleaned.append(n)
+            inst.notes = cleaned
+
+        # Tighten polyphony slightly to avoid dense clusters that sound noisy
+        pm = _clean_polyphony(pm, onset_window_sec=0.02, max_notes_per_onset=4)
+
+        # Light velocity smoothing (1,2,1 kernel)
+        for inst in pm.instruments:
+            if inst.notes and len(inst.notes) >= 3:
+                import numpy as _np  # local import to keep module load light
+                vel = _np.array([n.velocity for n in inst.notes], dtype=float)
+                kern = _np.array([1.0, 2.0, 1.0]) / 4.0
+                sm = _np.convolve(vel, kern, mode="same")
+                for n, v in zip(inst.notes, sm):
+                    n.velocity = int(max(1, min(127, round(v))))
+
+        # Write the enhanced MIDI
+        pm.write(output_mid_path)
+
+    # Load final MIDI for stats
+    pm_final = pretty_midi.PrettyMIDI(output_mid_path)
+    total_notes = sum(len(inst.notes) for inst in pm_final.instruments)
+    duration_sec = pm_final.get_end_time()
+    
+    print(f"[HYBRID] Completed: {total_notes} notes, {duration_sec:.1f}s duration")
+    print(f"[HYBRID] Enhanced with: MUCH SHARPER MIDI, light chord cleanup, enhanced timing, light chord filling")
+
+    return {
+        "notes": float(total_notes),
+        "duration_sec": float(duration_sec),
+        "bpm_estimate": float(bpm_estimate) if bpm_estimate is not None else None,
+    }
+
+
+# --- Expensive cloud-enhanced transcription (Demucs GPU + multi-pass refine) ---
+def transcribe_to_midi_enhanced(
+    input_wav_path: str,
+    output_mid_path: str,
+    use_cloud: bool = True,
+    cloud_model: str = "ryan5453/demucs",
+) -> Dict[str, Optional[float]]:
+    """
+    Very high quality transcription:
+    - Optional cloud Demucs GPU separation to remove vocals and percussion (expensive)
+    - Basic Pitch transcription on cleaner stem
+    - Multi-pass refinement against original audio and stem chroma
+    - Expressive performance shaping
+    """
+    # 1) Prepare WAV
+    wav_path = input_wav_path
+    try:
+        if not wav_path.lower().endswith('.wav'):
+            wav_path = _convert_to_wav(input_wav_path)
+    except Exception:
+        wav_path = input_wav_path
+
+    stem_for_bp = wav_path
+    extra_stem_mdx: Optional[str] = None
+    bpm_estimate: Optional[float] = None
+
+    # 2) If cloud available, run expensive Demucs to get accompaniment/other
+    if use_cloud:
+        if _rep is None or not os.environ.get("REPLICATE_API_TOKEN"):
+            # Strict: no fallback, user requested cloud-only for expensive mode
+            raise RuntimeError("Cloud-enhanced transcription requires Replicate API token; no local fallback.")
+        print("[ENHANCED] Starting cloud Demucs (GPU) separation via Replicate …")
+        try:
+            client = _rep.Client(api_token=os.environ.get("REPLICATE_API_TOKEN"))
+            # Upload
+            up = client.files.create(wav_path)
+            audio_url = up.urls['get']
+            # Model + latest version
+            model = client.models.get(cloud_model)
+            version_id = model.latest_version.id
+            print(f"[ENHANCED] Using cloud model: {cloud_model} (version: {version_id})")
+            # Prefer htdemucs 4-stem for best quality
+            inp = {"audio": audio_url, "model": "htdemucs", "output_format": "wav"}
+            pred = client.predictions.create(version=version_id, input=inp)
+            # Poll
+            deadline = time.time() + 900
+            while pred.status not in ("succeeded", "failed", "canceled"):
+                if time.time() > deadline:
+                    raise TimeoutError("Cloud Demucs timed out")
+                time.sleep(2)
+                pred = client.predictions.get(pred.id)
+            if pred.status != "succeeded":
+                raise RuntimeError(f"Cloud Demucs failed: {pred.status}")
+            if isinstance(pred.output, dict):
+                # Download accompaniment/other for cleaner BP input
+                for key in ("accompaniment", "other", "no_vocals"):
+                    url = pred.output.get(key)
+                    if isinstance(url, str) and url.startswith("http"):
+                        import requests as _rq
+                        r = _rq.get(url, timeout=180)
+                        r.raise_for_status()
+                        tmp = tempfile.mkstemp(suffix="_enh_stem.wav")[1]
+                        with open(tmp, "wb") as f:
+                            f.write(r.content)
+                        stem_for_bp = tmp
+                        print(f"[ENHANCED] Downloaded clean stem: {key}")
+                        break
+            else:
+                raise RuntimeError("Cloud Demucs returned no usable stems")
+
+            # Optional second expensive pass with mdx23 for diversity, best-effort
+            try:
+                inp2 = {"audio": audio_url, "model": "mdx23", "output_format": "wav"}
+                pred2 = client.predictions.create(version=version_id, input=inp2)
+                ddl = time.time() + 600
+                while pred2.status not in ("succeeded", "failed", "canceled"):
+                    if time.time() > ddl:
+                        raise TimeoutError("Cloud mdx23 timed out")
+                    time.sleep(2)
+                    pred2 = client.predictions.get(pred2.id)
+                if pred2.status == "succeeded" and isinstance(pred2.output, dict):
+                    for key in ("accompaniment", "other", "no_vocals"):
+                        url = pred2.output.get(key)
+                        if isinstance(url, str) and url.startswith("http"):
+                            import requests as _rq
+                            r = _rq.get(url, timeout=180)
+                            r.raise_for_status()
+                            tmp2 = tempfile.mkstemp(suffix="_enh_mdx23.wav")[1]
+                            with open(tmp2, "wb") as f:
+                                f.write(r.content)
+                            extra_stem_mdx = tmp2
+                            print("[ENHANCED] Downloaded additional mdx23 stem")
+                            break
+            except Exception:
+                pass
+        except Exception as e:
+            # Strict: bubble up, do not fallback
+            raise RuntimeError(f"Cloud-enhanced path failed: {e}")
+
+    # 3) Basic Pitch transcription (accurate profile)
+    tmp_mid = tempfile.mkstemp(suffix=".mid")[1]
+    print("[ENHANCED] Running Basic Pitch (accurate profile) on cleaned stem …")
+    stats_stem = transcribe_to_midi(stem_for_bp, tmp_mid, use_demucs=False, profile="accurate")
+    bpm_estimate = stats_stem.get("bpm_estimate") or bpm_estimate
+
+    # Also transcribe original audio (for union richness)
+    tmp_mid_orig = tempfile.mkstemp(suffix=".mid")[1]
+    print("[ENHANCED] Running Basic Pitch on original audio for union merge …")
+    stats_orig = transcribe_to_midi(wav_path, tmp_mid_orig, use_demucs=False, profile="accurate")
+    if bpm_estimate is None:
+        bpm_estimate = stats_orig.get("bpm_estimate") or None
+
+    # Optionally transcribe mdx23 stem
+    tmp_mid_mdx = None
+    if extra_stem_mdx:
+        tmp_mid_mdx = tempfile.mkstemp(suffix=".mid")[1]
+        print("[ENHANCED] Running Basic Pitch on mdx23 stem for union merge …")
+        _ = transcribe_to_midi(extra_stem_mdx, tmp_mid_mdx, use_demucs=False, profile="accurate")
+
+    # 4) Union-merge MIDIs from multiple sources
+    pm = pretty_midi.PrettyMIDI(tmp_mid)
+    pm_orig = pretty_midi.PrettyMIDI(tmp_mid_orig)
+    pm_merged = _merge_midis_union(pm, pm_orig)
+    if tmp_mid_mdx:
+        pm_mdx = pretty_midi.PrettyMIDI(tmp_mid_mdx)
+        pm_merged = _merge_midis_union(pm_merged, pm_mdx)
+    pm = pm_merged
+    print("[ENHANCED] Refining MIDI against original audio …")
+    pm = _refine_midi_against_audio(pm, wav_path, bpm=bpm_estimate or 120.0, max_poly=3)
+    pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=3)
+    pm = _limit_pitch_and_length(pm, pitch_min=36, pitch_max=96, min_duration_sec=0.06)
+    if stem_for_bp != wav_path:
+        print("[ENHANCED] Refining MIDI against clean stem …")
+        pm = _refine_midi_against_audio(pm, stem_for_bp, bpm=bpm_estimate or 120.0, max_poly=3)
+        pm = _clean_polyphony(pm, onset_window_sec=0.03, max_notes_per_onset=3)
+
+    # 5) Expressive performance for clarity and loudness
+    pm = expressive_enhance_midi(pm, humanize_timing_sec=0.008, humanize_velocity_range=18, sustain=True)
+    # Final velocity normalization for maximum punch without clipping
+    if pm.instruments:
+        for inst in pm.instruments:
+            vmax = max((n.velocity for n in inst.notes), default=0)
+            if vmax > 0 and vmax < 127:
+                scale = 127.0 / float(vmax)
+                for n in inst.notes:
+                    n.velocity = int(max(1, min(127, round(n.velocity * scale))))
+
+    # 6) Save
+    pm.write(output_mid_path)
+    for p in [tmp_mid, tmp_mid_orig, tmp_mid_mdx or None]:
+        try:
+            if p: os.remove(p)
+        except Exception:
+            pass
+
+    pm_final = pretty_midi.PrettyMIDI(output_mid_path)
+    total_notes = sum(len(i.notes) for i in pm_final.instruments)
+    duration_sec = pm_final.get_end_time()
+
+    return {
+        "notes": float(total_notes),
+        "duration_sec": float(duration_sec),
+        "bpm_estimate": float(bpm_estimate) if bpm_estimate is not None else None,
+    }
+
+
+def _estimate_bpm_from_midi(pm: pretty_midi.PrettyMIDI) -> Optional[float]:
+    """Estimate BPM from MIDI note timing patterns."""
+    if not pm.instruments or not pm.instruments[0].notes:
+        return None
+    
+    try:
+        # Get all note onsets
+        onsets = [note.start for inst in pm.instruments for note in inst.notes]
+        if len(onsets) < 4:
+            return None
+        
+        # Sort and get time differences
+        onsets.sort()
+        intervals = [onsets[i+1] - onsets[i] for i in range(len(onsets)-1)]
+        
+        # Filter out very short intervals (likely same chord)
+        intervals = [i for i in intervals if i > 0.05]
+        if not intervals:
+            return None
+        
+        # Find common intervals (likely beat patterns)
+        from collections import Counter
+        interval_counts = Counter()
+        for interval in intervals:
+            # Round to nearest 0.1 second for grouping
+            rounded = round(interval, 1)
+            interval_counts[rounded] += 1
+        
+        # Get most common interval
+        most_common_interval = max(interval_counts.items(), key=lambda x: x[1])[0]
+        
+        # Convert interval to BPM (60 seconds / interval = BPM)
+        if most_common_interval > 0:
+            bpm = 60.0 / most_common_interval
+            # Constrain to reasonable range
+            if 60 <= bpm <= 200:
+                return bpm
+        
+        return None
+    except Exception:
+        return None
+
+
+def _fill_chord_gaps(pm: pretty_midi.PrettyMIDI, max_gap_sec: float = 0.8, fill_velocity: int = 60, max_fill_notes: int = 2) -> pretty_midi.PrettyMIDI:
+    """
+    Light chord filling to reduce gaps between chords.
+    Adds subtle chords when there are gaps longer than max_gap_sec.
+    
+    Args:
+        pm: PrettyMIDI object
+        max_gap_sec: Maximum gap before adding fill chords (default: 0.8s)
+        fill_velocity: Velocity for fill notes (default: 60 - subtle)
+        max_fill_notes: Maximum notes per fill chord (default: 2 - light)
+    
+    Returns:
+        PrettyMIDI object with light chord fills
+    """
+    if not pm.instruments:
+        return pm
+    
+    # Get all note onsets and sort them
+    all_notes = []
+    for inst in pm.instruments:
+        for note in inst.notes:
+            all_notes.append((note.start, note.end, note.pitch, inst))
+    
+    if len(all_notes) < 2:
+        return pm
+    
+    # Sort by start time
+    all_notes.sort(key=lambda x: x[0])
+    
+    # Find gaps and add light fill chords
+    for i in range(len(all_notes) - 1):
+        current_end = all_notes[i][1]
+        next_start = all_notes[i + 1][0]
+        gap = next_start - current_end
+        
+        # If gap is too long, add a light fill chord
+        if gap > max_gap_sec:
+            # Calculate fill time (middle of the gap)
+            fill_time = current_end + (gap / 2)
+            
+            # Get the instrument from the current note
+            current_inst = all_notes[i][3]
+            
+            # Create a light fill chord (1-2 notes)
+            num_fill_notes = min(max_fill_notes, 2)
+            
+            # Use nearby pitches for the fill chord
+            current_pitch = all_notes[i][2]
+            next_pitch = all_notes[i + 1][2]
+            
+            # Create fill notes with nearby pitches
+            fill_pitches = []
+            if num_fill_notes == 1:
+                # Single note: use average of surrounding pitches
+                avg_pitch = int((current_pitch + next_pitch) / 2)
+                fill_pitches.append(avg_pitch)
+            else:
+                # Two notes: use current and next pitch
+                fill_pitches.append(current_pitch)
+                fill_pitches.append(next_pitch)
+            
+            # Add fill notes
+            for pitch in fill_pitches:
+                # Ensure pitch is in valid range
+                if 21 <= pitch <= 108:
+                    # Create a short, subtle fill note
+                    fill_note = pretty_midi.Note(
+                        velocity=fill_velocity,
+                        pitch=pitch,
+                        start=fill_time,
+                        end=min(fill_time + 0.3, next_start - 0.1)  # Short duration, don't overlap next note
+                    )
+                    current_inst.notes.append(fill_note)
+    
+    return pm
 

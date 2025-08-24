@@ -2,13 +2,6 @@ import SwiftUI
 import AVFoundation
 import AudioToolbox
 
-struct PianoNote: Identifiable {
-    let id = UUID()
-    let start: Double
-    let duration: Double
-    let pitch: Int
-}
-
 struct PianoRollView: View {
     let midiURL: URL
     @State private var notes: [PianoNote] = []

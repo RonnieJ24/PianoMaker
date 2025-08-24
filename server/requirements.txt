@@ -5,11 +5,17 @@ numpy
 librosa==0.10.1
 soundfile
 mido
+demucs
 pretty_midi
 torch
 torchaudio
-piano-transcription-inference
+# piano-transcription-inference removed - PTI was not producing good results
 basic-pitch==0.4.0
 tensorflow-macos==2.14.0
 tensorflow-metal==1.1.0
+
+# Cloud/offline utilities
+replicate>=0.30.0
+requests>=2.31.0
+python-dotenv>=1.0.1
 

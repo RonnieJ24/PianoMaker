@@ -20,7 +20,7 @@ struct PianoMakerApp: App {
             ContentView()
                 .onAppear {
                     Task {
-                        await Config.discoverAndSetServerBaseURL()
+                        // Server configuration is now simplified and static
                     }
                     #if DEBUG
                     if let url = Bundle.main.url(forResource: "SalC5Light2", withExtension: "sf2", subdirectory: "Resources/SoundFonts")

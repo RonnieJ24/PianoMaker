@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AVFoundation
+import Network
 
 @MainActor
 final class TranscriptionViewModel: ObservableObject {
@@ -8,25 +9,152 @@ final class TranscriptionViewModel: ObservableObject {
     @Published var midiLocalURL: URL?
     @Published var isUploading: Bool = false
     @Published var errorMessage: String?
-    @Published var useDemucs: Bool = false
+
     @Published var notesCount: Int?
     @Published var durationSec: Double?
     @Published var history: [CompletedTranscription] = []
-    @Published var usePTI: Bool = false
+    @Published var transcriptionMode: String = "pure" // pure, enhanced
     @Published var instrumentalURL: URL?
     @Published var vocalsURL: URL?
     @Published var isSeparating: Bool = false
     @Published var progressText: String? // shows simple loading state
     @Published var lastRenderedWav: URL?
-    @Published var coverStyle: String = "block" // block, arpeggio, alberti
-    @Published var profile: String = "balanced" // fast, balanced, accurate
+
+    // Great Quality separation is the only mode available // standard, pro, speed
     @Published var separationBackend: String? // displays backend used
+    @Published var separationSource: String? // displays source: "cloud", "local", "cloud_forced", etc.
+    @Published var separationCloudModel: String? // displays cloud model used: "ryan5453/demucs", etc.
+    // Single high-quality separation only (no modes)
+    @Published var selectedSoundFont: TranscriptionAPI.SoundFont = .generalUser
+    @Published var renderingQuality: String = "studio" // studio, high, low
+    @Published var midiURL: URL? // Remote MIDI URL for sharing
     @Published var infoMessage: String?
     @Published var separatingElapsedSec: Int = 0
     @Published var separatingEstimateSec: Int?
     @Published var separatingProgress: Double = 0
+    @Published var networkStatus: String = "Unknown"
+    @Published var serverReachable: Bool = false
+    @Published var lastErrorDetails: String?
+    
     private var separatingTimer: Timer?
     private var currentTask: Task<Void, Never>?
+    private let networkMonitor = NWPathMonitor()
+    private let networkQueue = DispatchQueue(label: "NetworkMonitor")
+
+    init() {
+        startNetworkMonitoring()
+        Task { await checkServerConnectivity() }
+    }
+    
+    deinit {
+        networkMonitor.cancel()
+    }
+    
+    private func startNetworkMonitoring() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                self?.updateNetworkStatus(path)
+            }
+        }
+        networkMonitor.start(queue: networkQueue)
+    }
+    
+    private func updateNetworkStatus(_ path: NWPath) {
+        switch path.status {
+        case .satisfied:
+            networkStatus = "Connected"
+            if path.usesInterfaceType(.wifi) {
+                networkStatus += " (WiFi)"
+            } else if path.usesInterfaceType(.cellular) {
+                networkStatus += " (Cellular)"
+            }
+        case .unsatisfied:
+            networkStatus = "No Connection"
+        case .requiresConnection:
+            networkStatus = "Connecting..."
+        @unknown default:
+            networkStatus = "Unknown"
+        }
+    }
+    
+    private func checkServerConnectivity() async {
+        let serverURL = Config.serverBaseURL
+        let healthURL = serverURL.appending(path: "/health")
+        
+        do {
+                    let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10.0  // 10 seconds for health check
+        config.timeoutIntervalForResource = 15.0 // 15 seconds total for health check
+            let session = URLSession(configuration: config)
+            
+            let (data, response) = try await session.data(from: healthURL)
+            
+            if let http = response as? HTTPURLResponse {
+                if (200..<300).contains(http.statusCode) {
+                    serverReachable = true
+                    infoMessage = "Server connected: \(serverURL.absoluteString)"
+                    errorMessage = nil
+                } else {
+                    serverReachable = false
+                    let bodyText = String(data: data, encoding: .utf8) ?? "No response body"
+                    errorMessage = "Server error: HTTP \(http.statusCode) - \(bodyText)"
+                    lastErrorDetails = "HTTP Status: \(http.statusCode)\nResponse: \(bodyText)"
+                }
+            } else {
+                serverReachable = false
+                errorMessage = "Invalid response from server"
+                lastErrorDetails = "Response type: \(type(of: response))"
+            }
+        } catch {
+            serverReachable = false
+            let nsError = error as NSError
+            errorMessage = "Cannot reach server: \(nsError.localizedDescription)"
+            lastErrorDetails = """
+            Error Domain: \(nsError.domain)
+            Error Code: \(nsError.code)
+            Description: \(nsError.localizedDescription)
+            Server URL: \(serverURL.absoluteString)
+            Network Status: \(networkStatus)
+            """
+        }
+    }
+    
+    func refreshServerStatus() async {
+        await checkServerConnectivity()
+    }
+    
+    func forceRefreshServerConfig() async {
+        // Clear any cached errors first
+        clearErrors()
+        // Force a fresh server connectivity check
+        await checkServerConnectivity()
+    }
+    
+    func forceReconnectToServer() async {
+        // Clear all state and force a fresh connection
+        resetState()
+        // Force a fresh server connectivity check
+        await checkServerConnectivity()
+    }
+    
+    func clearErrors() {
+        errorMessage = nil
+        lastErrorDetails = nil
+        infoMessage = nil
+    }
+    
+    func resetState() {
+        clearErrors()
+        isUploading = false
+        isSeparating = false
+        progressText = nil
+        separatingProgress = 0
+        separatingEstimateSec = nil
+        separatingTimer?.invalidate()
+        separatingTimer = nil
+        currentTask?.cancel()
+        currentTask = nil
+    }
 
     // Create a small, upload-friendly copy to reduce simulator timeouts
     private func makeUploadFriendlyCopy(from url: URL) async -> URL {
@@ -62,40 +190,122 @@ final class TranscriptionViewModel: ObservableObject {
         vocalsURL = nil
         separationBackend = nil
         progressText = nil
+        errorMessage = nil
+        lastErrorDetails = nil
         currentTask?.cancel(); currentTask = nil
     }
 
     @MainActor
     func transcribeSelectedFile() async {
         guard let fileURL = selectedFileURL else { return }
+        
+        // Check server connectivity first
+        if !serverReachable {
+            errorMessage = "Server is not reachable. Please check your connection and try again."
+            await checkServerConnectivity()
+            return
+        }
+        
         isUploading = true
         defer { isUploading = false }
 
+        // Add timeout mechanism to prevent infinite loading
+        let maxTranscriptionTime: TimeInterval = 600 // 10 minutes max for transcription
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(maxTranscriptionTime * 1_000_000_000))
+            await MainActor.run {
+                if isUploading {
+                    errorMessage = "Transcription timed out after 10 minutes. Please check server status and try again."
+                    lastErrorDetails = """
+                    Transcription Timeout:
+                    Max Allowed: \(Int(maxTranscriptionTime))s
+                    Server Reachable: \(serverReachable)
+                    File: \(fileURL.lastPathComponent)
+                    """
+                }
+            }
+        }
+        
+        defer { timeoutTask.cancel() }
+
         do {
             // Try streaming/async path first to avoid client timeouts on long songs
-            var fields: [String:String] = ["use_demucs": useDemucs ? "true" : "false"]
-            if !profile.isEmpty { fields["profile"] = profile }
+            var fields: [String:String] = [:]
+            fields["mode"] = transcriptionMode
+            
+            print("🎵 DEBUG: Starting transcription with mode: \(transcriptionMode)")
+            print("🎵 DEBUG: Fields: \(fields)")
+            print("🎵 DEBUG: Server URL: \(Config.serverBaseURL.absoluteString)")
+            print("🎵 DEBUG: File: \(fileURL.lastPathComponent)")
+            
             // Pre-export to compressed m4a to make upload faster and more reliable
             let uploadURL = await makeUploadFriendlyCopy(from: fileURL)
+            print("🎵 DEBUG: Upload URL prepared: \(uploadURL.lastPathComponent)")
+            
             let (data, response) = try await TranscriptionAPI.uploadJobStartStreaming(url: uploadURL, endpoint: "/transcribe_start", fields: fields)
+            
+            print("🎵 DEBUG: Initial response received")
+            print("🎵 DEBUG: Response data length: \(data.count)")
+            if let responseText = String(data: data, encoding: .utf8) {
+                print("🎵 DEBUG: Response body: \(responseText)")
+            }
+            
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 let bodyText = String(data: data, encoding: .utf8) ?? "Server returned status \(http.statusCode)"
-                throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: bodyText])
+                let errorMsg = "Transcription failed: HTTP \(http.statusCode) - \(bodyText)"
+                print("🎵 DEBUG: HTTP Error: \(errorMsg)")
+                errorMessage = errorMsg
+                lastErrorDetails = """
+                HTTP Status: \(http.statusCode)
+                Response Body: \(bodyText)
+                Server URL: \(Config.serverBaseURL.absoluteString)
+                """
+                throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg])
             }
+            
             let queued = try JSONDecoder().decode(TranscriptionAPI.QueuedJob.self, from: data)
+            print("🎵 DEBUG: Queued job received: \(queued.job_id)")
+            
             let finalResp = try await TranscriptionAPI.pollUntilDone(jobId: queued.job_id)
+            print("🎵 DEBUG: Final response received")
+            print("🎵 DEBUG: Status: \(finalResp.status)")
+            print("🎵 DEBUG: MIDI URL: \(finalResp.midiURL?.absoluteString ?? "nil")")
+            print("🎵 DEBUG: Notes: \(finalResp.notes ?? -1)")
+            print("🎵 DEBUG: Duration: \(finalResp.duration_sec ?? -1)")
+            
             if finalResp.status == .error {
-                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: finalResp.error ?? "Transcription failed"])
+                let errorMsg = "Transcription failed: \(finalResp.error ?? "Unknown error")"
+                print("🎵 DEBUG: Job failed with error: \(errorMsg)")
+                errorMessage = errorMsg
+                lastErrorDetails = """
+                Job Status: \(finalResp.status)
+                Error: \(finalResp.error ?? "None")
+                Job ID: \(queued.job_id)
+                """
+                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg])
             }
 
             guard let remote = finalResp.midiURL else {
-                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing MIDI URL in response"])
+                let errorMsg = "Missing MIDI URL in response"
+                print("🎵 DEBUG: Missing MIDI URL in response!")
+                print("🎵 DEBUG: Full response: \(finalResp)")
+                errorMessage = errorMsg
+                lastErrorDetails = """
+                Response Status: \(finalResp.status)
+                MIDI URL: nil
+                Notes: \(finalResp.notes ?? 0)
+                Duration: \(finalResp.duration_sec ?? 0)
+                """
+                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg])
             }
 
-            let localURL = try await TranscriptionAPI.download(url: remote)
+            // Get local copy of the MIDI file
+            let localURL = try await copyRemoteFileToLocal(remote)
             midiLocalURL = localURL
             notesCount = finalResp.notes
             durationSec = finalResp.duration_sec
+            errorMessage = nil
+            lastErrorDetails = nil
 
             let item = CompletedTranscription(
                 id: UUID(),
@@ -106,42 +316,79 @@ final class TranscriptionViewModel: ObservableObject {
                 notes: finalResp.notes
             )
             history.insert(item, at: 0)
+            
+            // Store the remote MIDI URL for sharing
+            if let midiURL = finalResp.midiURL {
+                self.midiURL = midiURL // Store for sharing
+            }
         } catch {
-            errorMessage = (error as NSError).localizedDescription
+            let nsError = error as NSError
+            if errorMessage == nil {
+                errorMessage = nsError.localizedDescription
+            }
+            if lastErrorDetails == nil {
+                lastErrorDetails = """
+                Error Domain: \(nsError.domain)
+                Error Code: \(nsError.code)
+                Description: \(nsError.localizedDescription)
+                User Info: \(nsError.userInfo)
+                """
+            }
         }
     }
 
     @MainActor
-    func runSeparation(
-        fast: Bool = true,
-        viaAPI: Bool = false,
-        vocalsOnly: Bool = false,
-        localSpleeter: Bool = false,
-        spleeterOnly: Bool = false
-    ) async {
+    func runSeparation() async {
         guard let fileURL = selectedFileURL else { return }
+        
+        // Check server connectivity first
+        if !serverReachable {
+            errorMessage = "Server is not reachable. Please check your connection and try again."
+            await checkServerConnectivity()
+            return
+        }
+        
         // Precompute rough ETA from local file duration (heuristic)
         var eta: Int? = nil
         if let u = selectedFileURL {
             let asset = AVURLAsset(url: u)
             let dur = CMTimeGetSeconds(asset.duration)
             if dur.isFinite && dur > 0 {
-                // HQ separation often ~0.8x–1.5x realtime locally; choose 1.2x as midpoint
-                let mult = fast ? 0.5 : 1.2
-                eta = Int(ceil(dur * mult))
+                // HQ separation often ~1.2x realtime
+                eta = Int(ceil(dur * 1.2))
             }
         }
-        separatingEstimateSec = eta ?? (fast ? 20 : 90)
+        separatingEstimateSec = eta ?? 90
 
         isSeparating = true
         separatingElapsedSec = 0
-        progressText = viaAPI ? (localSpleeter ? "Separating with local Spleeter…" : "Separating via Spleeter API…") : (fast ? "Separating (fast)…" : "Separating (HQ)…")
+        progressText = "Separating with high quality…"
         separatingTimer?.invalidate()
+        
+        // Add timeout mechanism to prevent infinite loading
+        let maxSeparationTime: TimeInterval = 900 // 15 minutes max to match backend polling
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(maxSeparationTime * 1_000_000_000))
+            await MainActor.run {
+                if isSeparating {
+                    errorMessage = "Separation timed out after 5 minutes. Please check server status and try again."
+                    lastErrorDetails = """
+                    Separation Timeout:
+                    Elapsed Time: \(separatingElapsedSec)s
+                    Estimated Time: \(separatingEstimateSec ?? 0)s
+                    Max Allowed: \(Int(maxSeparationTime))s
+                    Server Reachable: \(serverReachable)
+                    """
+                    cancelCurrentWork()
+                }
+            }
+        }
+        
         separatingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
                 self.separatingElapsedSec += 1
-                let base = viaAPI ? (localSpleeter ? "Separating with local Spleeter…" : "Separating via Spleeter API…") : (fast ? "Separating (fast)…" : "Separating (HQ)…")
+                let base = "Separating with high quality…"
                 if let est = self.separatingEstimateSec, est > 0 {
                     self.separatingProgress = min(1.0, Double(self.separatingElapsedSec) / Double(est))
                     let remaining = max(0, est - self.separatingElapsedSec)
@@ -151,52 +398,86 @@ final class TranscriptionViewModel: ObservableObject {
                 }
             }
         }
-        defer { isSeparating = false }
+        defer { 
+            isSeparating = false
+            timeoutTask.cancel()
+        }
+        
         do {
-            if viaAPI {
-                let r = try await TranscriptionAPI.separateAudioAPI(url: fileURL, spleeterOnly: spleeterOnly, vocalsOnly: vocalsOnly, localSpleeter: localSpleeter)
-                if let i = r.instrumental_url {
-                    let localI = try await TranscriptionAPI.download(url: i)
-                    instrumentalURL = localI
-                }
-                if let v = r.vocals_url {
-                    let localV = try await TranscriptionAPI.download(url: v)
-                    vocalsURL = localV
-                }
-                separationBackend = r.backend
-                // Show a friendly fallback notice if we didn't get the requested hosted/local Spleeter
-                if vocalsOnly || localSpleeter || spleeterOnly {
-                    let b = (r.backend ?? "").lowercased()
-                    if localSpleeter && b != "spleeter_local" {
-                        infoMessage = "Local Spleeter not available. Fell back to \(b.replacingOccurrences(of: "_", with: " ")). Result may be approximate."
-                    } else if (vocalsOnly || spleeterOnly) && b != "spleeter_api" {
-                        infoMessage = "Hosted Spleeter unavailable. Fell back to \(b.replacingOccurrences(of: "_", with: " "))."
-                    }
-                }
-            } else {
-                // Choose mode: fast → "fast"; non-fast default lets server pick best (hq).
-                // If user hinted "Great", request mode=great with enhancement.
-                let wantGreat = (infoMessage ?? "").lowercased().contains("enhance")
-                let mode = fast ? "fast" : (wantGreat ? "great" : nil)
-                let r = try await TranscriptionAPI.separateAudio(url: fileURL, mode: mode, enhance: wantGreat, queued: true)
-                if let i = r.instrumental_url {
-                    let localI = try await TranscriptionAPI.download(url: i)
-                    instrumentalURL = localI
-                }
-                if let v = r.vocals_url {
-                    let localV = try await TranscriptionAPI.download(url: v)
-                    vocalsURL = localV
-                }
-                separationBackend = r.backend
-                if let fb = r.fallback_from, !fb.isEmpty {
-                    infoMessage = "Fell back from \(fb) → \(r.backend ?? "")"
-                }
+            // Use single high-quality separation endpoint (no modes)
+            let r = try await TranscriptionAPI.separateAudio(url: fileURL, queued: true)
+            
+            print("🎵 DEBUG: Separation response received:")
+            print("🎵 DEBUG: - Status: \(r.status)")
+            print("🎵 DEBUG: - Job ID: \(r.job_id)")
+            print("🎵 DEBUG: - Instrumental URL: \(r.instrumental_url?.absoluteString ?? "nil")")
+            print("🎵 DEBUG: - Vocals URL: \(r.vocals_url?.absoluteString ?? "nil")")
+            print("🎵 DEBUG: - Backend: \(r.backend ?? "nil")")
+            print("🎵 DEBUG: - Source: \(r.source ?? "nil")")
+            print("🎵 DEBUG: - Cloud Model: \(r.cloud_model ?? "nil")")
+            
+            // Check if we actually got URLs
+            if r.instrumental_url == nil && r.vocals_url == nil {
+                print("🚨 ERROR: Both instrumental and vocals URLs are nil!")
+                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Separation completed but no audio files were returned"])
             }
+            
+            if let i = r.instrumental_url {
+                print("🎵 DEBUG: Downloading instrumental from: \(i.absoluteString)")
+                let localI = try await copyRemoteFileToLocal(i)
+                print("🎵 DEBUG: Instrumental downloaded to: \(localI.absoluteString)")
+                instrumentalURL = localI
+            } else {
+                print("🚨 ERROR: No instrumental URL in response!")
+            }
+            
+            if let v = r.vocals_url {
+                print("🎵 DEBUG: Downloading vocals from: \(v.absoluteString)")
+                let localV = try await copyRemoteFileToLocal(v)
+                print("🎵 DEBUG: Vocals downloaded to: \(localV.absoluteString)")
+                vocalsURL = localV
+            } else {
+                print("🚨 ERROR: No vocals URL in response!")
+            }
+            
+            separationBackend = r.backend
+            separationSource = r.source
+            separationCloudModel = r.cloud_model
+            
+            print("🎵 DEBUG: Final state after processing:")
+            print("🎵 DEBUG: - instrumentalURL: \(instrumentalURL?.absoluteString ?? "nil")")
+            print("🎵 DEBUG: - vocalsURL: \(vocalsURL?.absoluteString ?? "nil")")
+            print("🎵 DEBUG: - separationBackend: \(separationBackend ?? "nil")")
+            print("🎵 DEBUG: - separationSource: \(separationSource ?? "nil")")
+            print("🎵 DEBUG: - separationCloudModel: \(separationCloudModel ?? "nil")")
+            
+            // Verify we have at least one track
+            if instrumentalURL == nil && vocalsURL == nil {
+                print("🚨 CRITICAL ERROR: Both tracks failed to download!")
+                throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to download any audio tracks from separation"])
+            }
+            
+            infoMessage = "High-quality separation completed successfully!"
+            
             progressText = nil
             separatingProgress = 0
             separatingEstimateSec = nil
+            errorMessage = nil
+            lastErrorDetails = nil
         } catch {
-            errorMessage = (error as NSError).localizedDescription
+            let nsError = error as NSError
+            if errorMessage == nil {
+                errorMessage = nsError.localizedDescription
+            }
+            if lastErrorDetails == nil {
+                lastErrorDetails = """
+                Separation Error:
+                Domain: \(nsError.domain)
+                Code: \(nsError.code)
+                Description: \(nsError.localizedDescription)
+                User Info: \(nsError.userInfo)
+                """
+            }
             progressText = nil
             separatingProgress = 0
             separatingEstimateSec = nil
@@ -206,22 +487,19 @@ final class TranscriptionViewModel: ObservableObject {
 
     // Launch helpers to allow cancel from UI
     @MainActor
-    func startSeparation(
-        fast: Bool = true,
-        viaAPI: Bool = false,
-        vocalsOnly: Bool = false,
-        localSpleeter: Bool = false,
-        spleeterOnly: Bool = false
-    ) {
+    func startSeparation() {
         currentTask?.cancel()
+        
+        // Clear previous separation results
+        instrumentalURL = nil
+        vocalsURL = nil
+        separationBackend = nil
+        separationSource = nil
+        separationCloudModel = nil
+        infoMessage = nil
+        
         currentTask = Task { [weak self] in
-            await self?.runSeparation(
-                fast: fast,
-                viaAPI: viaAPI,
-                vocalsOnly: vocalsOnly,
-                localSpleeter: localSpleeter,
-                spleeterOnly: spleeterOnly
-            )
+            await self?.runSeparation()
             await MainActor.run { self?.currentTask = nil }
         }
     }
@@ -244,6 +522,26 @@ final class TranscriptionViewModel: ObservableObject {
         separatingProgress = 0
         separatingEstimateSec = nil
         separatingTimer?.invalidate(); separatingTimer = nil
+        
+        // Clear separation results when canceling
+        if isSeparating {
+            instrumentalURL = nil
+            vocalsURL = nil
+            separationBackend = nil
+            separationSource = nil
+            separationCloudModel = nil
+        }
+        
+        // Clear any pending errors when canceling
+        if isUploading || isSeparating {
+            errorMessage = "Operation was cancelled by user"
+            lastErrorDetails = """
+            Operation Cancelled:
+            Uploading: \(isUploading)
+            Separating: \(isSeparating)
+            Time: \(Date().formatted())
+            """
+        }
     }
 
     @MainActor
@@ -260,81 +558,11 @@ final class TranscriptionViewModel: ObservableObject {
         await transcribeSelectedFile()
     }
 
-    @MainActor
-    func ddspMelodyToPiano() async {
-        guard let fileURL = selectedFileURL else { return }
-        isUploading = true
-        defer { isUploading = false }
-        do {
-            let resp = try await TranscriptionAPI.ddspMelodyToPiano(url: fileURL, render: true)
-            // Download MIDI
-            let midi = try await TranscriptionAPI.download(url: resp.midi_url)
-            midiLocalURL = midi
-            notesCount = nil
-            durationSec = nil
-            if let wavURL = resp.wav_url {
-                // Download WAV
-                let (data, response) = try await URLSession.shared.data(from: wavURL)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-                let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    .appending(path: "Transcriptions", directoryHint: .isDirectory)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let outURL = folder.appending(path: "\(UUID().uuidString)_melody.wav")
-                try data.write(to: outURL)
-                lastRenderedWav = outURL
-            }
-        } catch {
-            errorMessage = (error as NSError).localizedDescription
-        }
-    }
 
-    @MainActor
-    func coverHQ() async {
-        guard let fileURL = selectedFileURL else { return }
-        isUploading = true
-        defer { isUploading = false }
-        do {
-            let resp = try await TranscriptionAPI.pianoCoverHQ(url: fileURL, useDemucs: useDemucs, render: true)
-            let midi = try await TranscriptionAPI.download(url: resp.midi_url)
-            midiLocalURL = midi
-            if let wav = resp.wav_url {
-                let (data, response) = try await URLSession.shared.data(from: wav)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-                let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    .appending(path: "Transcriptions", directoryHint: .isDirectory)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let outURL = folder.appending(path: "\(UUID().uuidString)_cover_hq.wav")
-                try data.write(to: outURL)
-                lastRenderedWav = outURL
-            }
-        } catch {
-            errorMessage = (error as NSError).localizedDescription
-        }
-    }
 
-    @MainActor
-    func coverStyleRun() async {
-        guard let fileURL = selectedFileURL else { return }
-        isUploading = true
-        defer { isUploading = false }
-        do {
-            let resp = try await TranscriptionAPI.pianoCoverStyle(url: fileURL, style: coverStyle, useDemucs: useDemucs, render: true)
-            let midi = try await TranscriptionAPI.download(url: resp.midi_url)
-            midiLocalURL = midi
-            if let wav = resp.wav_url {
-                let (data, response) = try await URLSession.shared.data(from: wav)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-                let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    .appending(path: "Transcriptions", directoryHint: .isDirectory)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let outURL = folder.appending(path: "\(UUID().uuidString)_cover_\(coverStyle).wav")
-                try data.write(to: outURL)
-                lastRenderedWav = outURL
-            }
-        } catch {
-            errorMessage = (error as NSError).localizedDescription
-        }
-    }
+
+
+
 
     @MainActor
     func renderAudio(from midiURL: URL) async throws -> URL {
@@ -498,6 +726,71 @@ final class TranscriptionViewModel: ObservableObject {
         try midData.write(to: outURL)
         return outURL
     }
+    
+    // MARK: - File Operations
+    
+    private func copyRemoteFileToLocal(_ remoteURL: URL) async throws -> URL {
+        let (data, response) = try await URLSession.shared.data(from: remoteURL)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch remote file"])
+        }
+        
+        let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appending(path: "Transcriptions", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        
+        let filename = remoteURL.lastPathComponent.isEmpty ? "\(UUID().uuidString).mid" : remoteURL.lastPathComponent
+        let localURL = folder.appending(path: filename)
+        try data.write(to: localURL)
+        return localURL
+    }
+    
+    // MARK: - Rendering
+    
+    @MainActor
+    func renderMIDI(midiData: Data) async {
+        isUploading = true
+        defer { isUploading = false }
+        
+        do {
+            print("🎵 DEBUG: Starting render with SoundFont: \(selectedSoundFont.rawValue)")
+            let jobId = try await TranscriptionAPI.startRender(
+                midiData: midiData,
+                soundFont: selectedSoundFont,
+                preview: true,
+                quality: renderingQuality
+            )
+            
+            print("🎵 DEBUG: Render job started: \(jobId)")
+            
+            // Poll for completion
+            let maxWaitTime: TimeInterval = 900 // 15 minutes
+            let startTime = Date()
+            
+            while Date().timeIntervalSince(startTime) < maxWaitTime {
+                let status = try await TranscriptionAPI.pollRenderJob(jobId: jobId)
+                print("🎵 DEBUG: Render status: \(status.status)")
+                
+                if status.status == "done" {
+                    if let wavURL = status.wav_url {
+                        lastRenderedWav = wavURL
+                        print("🎵 DEBUG: Render completed: \(wavURL)")
+                    }
+                    break
+                } else if status.status == "error" {
+                    throw NSError(domain: "Render", code: -1, userInfo: [NSLocalizedDescriptionKey: "Rendering failed"])
+                }
+                
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            }
+            
+        } catch {
+            print("🎵 DEBUG: Render error: \(error)")
+            errorMessage = "Rendering failed: \(error.localizedDescription)"
+        }
+    }
+    
+
 }
 
 
