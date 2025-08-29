@@ -54,3 +54,4 @@ server/.venv*/
 .venv*/
 
 server/soundfonts/*.sf2
+.spleeter-venv/
