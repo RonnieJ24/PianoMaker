@@ -133,6 +133,11 @@ final class MIDIPlayer {
         guard let p = midiPlayer else { return }
         p.currentPosition = max(0, min(seconds, p.duration))
     }
+    
+    var rate: Float {
+        get { midiPlayer?.rate ?? 1.0 }
+        set { midiPlayer?.rate = newValue }
+    }
 }
 
 

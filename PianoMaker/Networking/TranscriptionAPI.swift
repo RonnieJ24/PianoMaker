@@ -277,6 +277,9 @@ struct TranscriptionAPI {
         // Add sample rate for SFizz (sfz)
         if soundFont.type == "sfz" {
             append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"sfz\"\r\n\r\n")
+            append("\(soundFont.rawValue)\r\n")
+            append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"sr\"\r\n\r\n")
             append("44100\r\n")
         }
@@ -320,6 +323,9 @@ struct TranscriptionAPI {
         
         // Add sample rate for SFizz (sfz)
         if soundFont.type == "sfz" {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"sfz\"\r\n\r\n")
+            append("\(soundFont.rawValue)\r\n")
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"sr\"\r\n\r\n")
             append("44100\r\n")

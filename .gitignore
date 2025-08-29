@@ -55,3 +55,11 @@ server/.venv*/
 
 server/soundfonts/*.sf2
 .spleeter-venv/
+
+# Virtual environments
+.venv/
+.venv311/
+.spleeter-venv/
+.spleeter-venv38/
+server/.venv/
+server/.venv311/

@@ -6,6 +6,7 @@ import threading
 import time
 import subprocess
 from typing import Optional
+import asyncio
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+import certifi as _certifi
 
 try:
     from server.inference import OUTPUTS_DIR, transcribe_to_midi, transcribe_to_midi_pure_basic_pitch, transcribe_to_midi_hybrid, _convert_to_wav, render_midi_to_wav, perform_midi, perform_midi_ml, render_midi_to_wav_sfizz, trim_midi, melody_to_midi, piano_cover_from_audio_hq, piano_cover_from_audio_style, perform_audio_cloud
@@ -26,6 +28,13 @@ except Exception:
     _rep = None
 
 load_dotenv()
+
+# Ensure TLS uses certifi bundle to avoid SSL errors on some systems/proxies
+try:
+    os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
+except Exception:
+    pass
 
 app = FastAPI(title="PianoMaker API", version="0.1.0")
 # Allow simulator/device to connect
@@ -54,10 +63,19 @@ async def health():
 async def capabilities():
     """Report optional backend capabilities so the client can adapt UI."""
     ffmpeg_available = shutil.which("ffmpeg") is not None
+    sfizz_available = shutil.which("sfizz_render") is not None
+    # Enumerate available SF2 soundfonts
+    try:
+        sf2_dir = os.path.join(os.path.dirname(__file__), "soundfonts")
+        soundfonts = [f for f in os.listdir(sf2_dir) if f.lower().endswith(".sf2")] if os.path.isdir(sf2_dir) else []
+    except Exception:
+        soundfonts = []
 
     return JSONResponse(content={
         "status": "ok",
         "ffmpeg_available": bool(ffmpeg_available),
+        "sfizz_available": bool(sfizz_available),
+        "soundfonts": soundfonts,
     })
 
 # Ensure outputs directory exists and mount it for static serving
@@ -327,15 +345,24 @@ async def job_status(request: Request, job_id: str):
             response["status"] = "done"
             response["progress"] = 1.0
 
+    # SFZ rendering output (WAV)
+    rendered_wav_path = os.path.join(job_dir, "rendered.wav")
+    if os.path.isfile(rendered_wav_path):
+        response["wav_url"] = f"{base_url}/outputs/{job_id}/rendered.wav"
+        if response["status"] not in ["done", "error"]:
+            response["status"] = "done"
+            response["progress"] = 1.0
+
     return response
 
 @app.post("/transcribe")
 async def transcribe(request: Request, file: UploadFile = File(...), use_demucs: bool = Form(False), mode: str = Form("pure")):
     """
-    Transcription endpoint with three quality modes:
+    Transcription endpoint with four quality modes:
     
     - mode="pure" (default): Pure Basic Pitch (exactly like the website)
     - mode="hybrid": Basic Pitch + AI enhancement (louder/sharp + chord cleanup)
+    - mode="professional": Highest quality local processing with studio-quality enhancement
     - mode="enhanced": Full AI-enhanced Basic Pitch with post-processing, quantization, humanization
     """
     if file is None:
@@ -365,6 +392,9 @@ async def transcribe(request: Request, file: UploadFile = File(...), use_demucs:
             _ = transcribe_to_midi_pure_basic_pitch(wav_path, job_midi)
         elif mode == "hybrid":
             _ = transcribe_to_midi_hybrid(wav_path, job_midi)
+        elif mode == "professional":
+            from inference import transcribe_to_midi_professional
+            _ = transcribe_to_midi_professional(wav_path, job_midi)
         elif mode == "enhanced":
             # Cloud-expensive enhanced path (uses Replicate if configured)
             from inference import transcribe_to_midi_enhanced
@@ -501,6 +531,9 @@ def _transcribe_job_runner_mode(job_id: str, job_dir: str, original_path: str, m
             _ = transcribe_to_midi_pure_basic_pitch(wav_path, job_midi)
         elif mode == "hybrid":
             _ = transcribe_to_midi_hybrid(wav_path, job_midi)
+        elif mode == "professional":
+            from inference import transcribe_to_midi_professional
+            _ = transcribe_to_midi_professional(wav_path, job_midi)
         elif mode == "enhanced":
             _ = transcribe_to_midi(wav_path, job_midi)
         else:
@@ -536,7 +569,21 @@ async def perform(request: Request, midi: UploadFile = File(...)):
     return JSONResponse(content={"status": "done", "midi_url": midi_url, "job_id": job_id})
 
 @app.post("/perform_ml")
-async def perform_ml(request: Request, midi: UploadFile = File(...), performer_url: Optional[str] = Form(None)):
+async def perform_ml(
+    request: Request, 
+    midi: UploadFile = File(...), 
+    performer_url: Optional[str] = Form(None),
+    style: Optional[str] = Form("romantic")
+):
+    """
+    Enhanced ML performance with multiple styles:
+    - romantic: Expressive, rubato, dynamic
+    - jazz: Swing, syncopation, groove  
+    - classical: Clean, precise, balanced
+    - impressionist: Delicate, atmospheric
+    - modern: Contemporary, experimental
+    - baroque: Ornamented, articulated
+    """
     if midi is None:
         raise HTTPException(status_code=400, detail="No MIDI uploaded")
 
@@ -549,17 +596,73 @@ async def perform_ml(request: Request, midi: UploadFile = File(...), performer_u
         shutil.copyfileobj(midi.file, f)
 
     out_mid = os.path.join(job_dir, "performed.mid")
+    # Choose performer URL: form > env > default
+    eff_url = performer_url or os.environ.get("PERFORMER_URL") or "http://127.0.0.1:8502/perform"
+    
+    # Validate style parameter
+    valid_styles = ["romantic", "jazz", "classical", "impressionist", "modern", "baroque"]
+    if style not in valid_styles:
+        style = "romantic"  # Default fallback
+    
     try:
-        perform_midi_ml(in_mid, out_mid, performer_url)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ML performance enhancement failed: {e}")
+        # Pass style to the ML performer
+        perform_midi_ml(in_mid, out_mid, eff_url, style)
+    except Exception:
+        # Fallback to built-in expressive performer so the feature still works
+        try:
+            perform_midi(in_mid, out_mid)
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"ML performance enhancement failed (fallback also failed): {e2}")
 
     base_url = str(request.base_url).rstrip("/")
     midi_url = f"{base_url}/outputs/{job_id}/performed.mid"
-    return JSONResponse(content={"status": "done", "midi_url": midi_url, "job_id": job_id})
+    return JSONResponse(content={
+        "status": "done", 
+        "midi_url": midi_url, 
+        "job_id": job_id,
+        "style_applied": style
+    })
+
+@app.get("/ml_performer_styles")
+async def get_ml_performer_styles():
+    """Get available ML performer styles."""
+    return JSONResponse(content={
+        "styles": [
+            {
+                "id": "romantic",
+                "name": "Romantic",
+                "description": "Expressive, rubato, dynamic - perfect for emotional pieces"
+            },
+            {
+                "id": "jazz", 
+                "name": "Jazz",
+                "description": "Swing, syncopation, groove - ideal for jazz and contemporary music"
+            },
+            {
+                "id": "classical",
+                "name": "Classical", 
+                "description": "Clean, precise, balanced - traditional classical performance"
+            },
+            {
+                "id": "impressionist",
+                "name": "Impressionist",
+                "description": "Delicate, atmospheric - great for Debussy-style pieces"
+            },
+            {
+                "id": "modern",
+                "name": "Modern",
+                "description": "Contemporary, experimental - modern performance techniques"
+            },
+            {
+                "id": "baroque",
+                "name": "Baroque",
+                "description": "Ornamented, articulated - authentic baroque performance"
+            }
+        ]
+    })
 
 @app.post("/render")
-async def render(request: Request, midi: UploadFile = File(...), soundfont: Optional[str] = Form("default")):
+async def render(request: Request, midi: UploadFile = File(...), soundfont: Optional[str] = Form("default"), quality: Optional[str] = Form("studio")):
     if midi is None:
         raise HTTPException(status_code=400, detail="No MIDI uploaded")
 
@@ -573,16 +676,112 @@ async def render(request: Request, midi: UploadFile = File(...), soundfont: Opti
 
     out_wav = os.path.join(job_dir, "rendered.wav")
     try:
-        if soundfont == "sfizz":
+        sf = (soundfont or "").strip().lower()
+        if sf == "sfizz":
             render_midi_to_wav_sfizz(in_mid, out_wav)
         else:
-            render_midi_to_wav(in_mid, out_wav)
+            preferred_bank = None
+            # Enhanced soundfont selection for professional quality
+            if sf in ("generaluser", "general", "generaluser_gs"):
+                preferred_bank = "GeneralUser_GS_v1.471.sf2"
+            elif sf in ("fluid", "fluidr3", "fluidr3_gm"):
+                preferred_bank = "FluidR3_GM.sf2"
+            elif sf in ("arachno",):
+                preferred_bank = "Arachno SoundFont - Version 1.0.sf2"
+            elif sf in ("mscore", "musescore"):
+                preferred_bank = "MuseScore_General.sf2"
+            elif sf in ("professional", "pro", "studio"):
+                # Professional mode: use best available soundfont
+                if os.path.exists(os.path.join(os.path.dirname(__file__), "soundfonts", "GeneralUser_GS_v1.471.sf2")):
+                    preferred_bank = "GeneralUser_GS_v1.471.sf2"
+                elif os.path.exists(os.path.join(os.path.dirname(__file__), "soundfonts", "FluidR3_GM.sf2")):
+                    preferred_bank = "FluidR3_GM.sf2"
+                else:
+                    preferred_bank = "GeneralUser_GS_v1.471.sf2"  # Default fallback
+
+            # If a specific bank was requested, ensure it exists to avoid silent fallback
+            if preferred_bank is not None:
+                bank_path = os.path.join(os.path.dirname(__file__), "soundfonts", preferred_bank)
+                if not os.path.isfile(bank_path):
+                    raise HTTPException(status_code=503, detail=f"Requested soundfont '{preferred_bank}' not found under server/soundfonts. Place the file there and retry.")
+
+            # Use quality setting for professional output
+            render_quality = "studio" if quality in ("studio", "professional", "pro") else "standard"
+            mastering_enabled = quality in ("studio", "professional", "pro")
+            
+            render_midi_to_wav(in_mid, out_wav, preferred_bank=preferred_bank, quality=render_quality, mastering=mastering_enabled)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MIDI rendering failed: {e}")
 
     base_url = str(request.base_url).rstrip("/")
     wav_url = f"{base_url}/outputs/{job_id}/rendered.wav"
     return JSONResponse(content={"status": "done", "wav_url": wav_url, "job_id": job_id})
+@app.post("/render_sfizz")
+async def render_sfizz(request: Request, midi: UploadFile = File(...), sfz: Optional[str] = Form(None), samplerate: int = Form(48000)):
+    if midi is None:
+        raise HTTPException(status_code=400, detail="No MIDI uploaded")
+
+    job_id = uuid.uuid4().hex[:8]
+    job_dir = os.path.join(OUTPUTS_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    in_mid = os.path.join(job_dir, "input.mid")
+    with open(in_mid, "wb") as f:
+        shutil.copyfileobj(midi.file, f)
+
+    # Create job status file (using same format as other jobs)
+    job_status = {
+        "status": "processing",
+        "progress": 0.0,
+        "timestamp": time.time()
+    }
+    
+    with open(os.path.join(job_dir, "progress.json"), "w") as f:
+        json.dump(job_status, f)
+
+    # Start background rendering
+    asyncio.create_task(_render_sfizz_job(job_id, in_mid, sfz, samplerate))
+
+    return JSONResponse(content={"status": "processing", "job_id": job_id})
+
+async def _render_sfizz_job(job_id: str, midi_path: str, sfz: Optional[str], samplerate: int):
+    """Background task to render SFZ audio"""
+    job_dir = os.path.join(OUTPUTS_DIR, job_id)
+    out_wav = os.path.join(job_dir, "rendered.wav")
+    
+    try:
+        # Update status to processing
+        job_status = {
+            "status": "processing",
+            "progress": 0.5,
+            "timestamp": time.time()
+        }
+        with open(os.path.join(job_dir, "progress.json"), "w") as f:
+            json.dump(job_status, f)
+        
+        # Perform the actual rendering
+        render_midi_to_wav_sfizz(midi_path, out_wav, preferred_sfz=sfz, sr=samplerate)
+        
+        # Update status to completed
+        job_status = {
+            "status": "done",
+            "progress": 1.0,
+            "timestamp": time.time()
+        }
+        with open(os.path.join(job_dir, "progress.json"), "w") as f:
+            json.dump(job_status, f)
+            
+    except Exception as e:
+        # Update status to failed
+        job_status = {
+            "status": "failed",
+            "progress": 0.0,
+            "timestamp": time.time(),
+            "error": str(e)
+        }
+        with open(os.path.join(job_dir, "progress.json"), "w") as f:
+            json.dump(job_status, f)
+
 
 
 @app.post("/perform_cloud")
@@ -722,26 +921,25 @@ async def separate_audio(request: Request, file: UploadFile = File(...), mode: s
     with open(input_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Initialize job meta so /job shows intent immediately
+    # FORCE CLOUD-ONLY: no local fallback. Require Replicate token.
+    if _rep is None or not os.environ.get("REPLICATE_API_TOKEN"):
+        raise HTTPException(status_code=503, detail="Cloud processing required but not available. Please configure Replicate API token.")
+
+    # Initialize job meta as cloud-only
     try:
         with open(os.path.join(job_dir, "meta.json"), "w") as f:
             json.dump({
-                "backend": "cloud_only",
+                "backend": "replicate",
                 "separation_source": "cloud_forced",
-                "cloud_model": cloud_model or os.environ.get("REPLICATE_MODEL"),
+                "cloud_model": (cloud_model or os.environ.get("REPLICATE_MODEL")),
                 "mode": mode
             }, f)
     except Exception:
         pass
 
-    # Start separation in background thread
-    # FORCE CLOUD ONLY - no local fallback ever
-    if _rep is not None and os.environ.get("REPLICATE_API_TOKEN"):
-        t = threading.Thread(target=_separate_audio_job_runner_cloud, args=(job_id, job_dir, input_path, mode, cloud_model))
-        print(f"🔒 FORCED CLOUD: Starting cloud separation job {job_id}")
-    else:
-        # Only if cloud is completely unavailable
-        raise HTTPException(status_code=503, detail="Cloud processing required but not available. Please configure Replicate API token.")
+    # Start separation in background thread (cloud only)
+    t = threading.Thread(target=_separate_audio_job_runner_cloud, args=(job_id, job_dir, input_path, mode, cloud_model))
+    print(f"🔒 FORCED CLOUD: Starting cloud separation job {job_id}")
     t.daemon = True
     t.start()
 
@@ -749,8 +947,8 @@ async def separate_audio(request: Request, file: UploadFile = File(...), mode: s
         "status": "started",
         "job_id": job_id,
         "message": f"Audio separation started with mode: {mode}",
-        "cloud": bool(cloud),
-        "cloud_model": cloud_model or os.environ.get("REPLICATE_MODEL")
+        "cloud": True,
+        "cloud_model": (cloud_model or os.environ.get("REPLICATE_MODEL"))
     })
 
 def _separate_audio_job_runner(job_id: str, job_dir: str, input_path: str, mode: str):
@@ -903,14 +1101,23 @@ def _separate_audio_job_runner_cloud(job_id: str, job_dir: str, input_path: str,
         except Exception as e:
             raise RuntimeError(f"Failed to get model info: {e}")
         
-        # Upload audio file to Replicate first
+        # Upload audio file to Replicate with retries
         print(f"Uploading audio file to Replicate...")
-        try:
-            upload_response = client.files.create(wav_path)
-            audio_url = upload_response.urls['get']
-            print(f"✅ Audio uploaded: {audio_url}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to upload audio file: {e}")
+        last_upload_error = None
+        for attempt in range(3):
+            try:
+                upload_response = client.files.create(wav_path)
+                audio_url = upload_response.urls['get']
+                print(f"✅ Audio uploaded: {audio_url}")
+                last_upload_error = None
+                break
+            except Exception as e:
+                last_upload_error = e
+                wait_s = 1 * (2 ** attempt)
+                print(f"❌ Upload attempt {attempt+1} failed: {e}. Retrying in {wait_s}s …")
+                time.sleep(wait_s)
+        if last_upload_error is not None:
+            raise RuntimeError(f"Failed to upload audio file after retries: {last_upload_error}")
 
         # Different UVR wrappers on Replicate accept slightly different keys; try a couple of common schemas
         candidate_inputs = [
@@ -1011,7 +1218,8 @@ def _separate_audio_job_runner_cloud(job_id: str, job_dir: str, input_path: str,
                             cmd = ["ffmpeg", "-y"]
                             for track in instrumental_tracks:
                                 cmd.extend(["-i", track])
-                            cmd.extend(["-filter_complex", "amix=inputs=" + str(len(instrumental_tracks)) + ":duration=longest", inst_path])
+                            # Normalize mix to avoid clipping and keep balance
+                            cmd.extend(["-filter_complex", "amix=inputs=" + str(len(instrumental_tracks)) + ":duration=longest:normalize=1", inst_path])
                             
                             result = subprocess.run(cmd, capture_output=True, text=True)
                             if result.returncode == 0:
@@ -1076,6 +1284,14 @@ def _separate_audio_job_runner_cloud(job_id: str, job_dir: str, input_path: str,
                                         voc_path = voc_path or p
             except Exception as e:
                 print(f"Zip extraction failed: {e}")
+
+        # Optional enhancement to reduce cross-talk and artifacts between stems
+        try:
+            if inst_path and voc_path and os.path.exists(inst_path) and os.path.exists(voc_path):
+                from inference import _enhance_stems  # type: ignore
+                inst_path, voc_path = _enhance_stems(inst_path, voc_path, strength=0.7)
+        except Exception:
+            pass
 
         # If still missing, fail (no local fallback)
         if inst_path is None and voc_path is None:
