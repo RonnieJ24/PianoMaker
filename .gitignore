@@ -63,3 +63,4 @@ server/soundfonts/*.sf2
 .spleeter-venv38/
 server/.venv/
 server/.venv311/
+server/.env
