@@ -10,6 +10,7 @@ final class GlobalAudioPlayerModel: ObservableObject {
     @Published var duration: TimeInterval = 0
     @Published var debugText: String = ""
     @Published var isCollapsed: Bool = false
+    @Published var isHidden: Bool = false
 
     private var player: AVAudioPlayer?
     private var updateTimer: Timer?
@@ -90,56 +91,188 @@ final class GlobalAudioPlayerModel: ObservableObject {
     }
 }
 
-struct GlobalAudioPlayerView: View {
-    @EnvironmentObject var model: GlobalAudioPlayerModel
 
+
+struct ModernGlobalAudioPlayerView: View {
+    @EnvironmentObject var model: GlobalAudioPlayerModel
+    @State private var isExpanded = false
+    
     var body: some View {
-        Group {
-            if model.isCollapsed {
-                HStack(spacing: 8) {
-                    Button(model.isPlaying ? "Pause" : "Play") {
-                        model.isPlaying ? model.pause() : model.resume()
-                    }
-                    Text(model.title).lineLimit(1).font(.footnote)
-                    Spacer()
+        VStack(spacing: 0) {
+            // Main player bar
+            HStack(spacing: 16) {
+                // Play/Pause button with modern design
+                Button(action: {
+                    model.isPlaying ? model.pause() : model.resume()
+                }) {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 44)
+                        .background(
+                            LinearGradient(
+                                colors: model.isPlaying ? 
+                                    [Color.orange, Color.red] : 
+                                    [Color.blue, Color.cyan],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.3), radius: 6, x: 0, y: 3)
+                }
+                
+                // Track info
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.title)
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    
                     Text("\(format(model.currentTime)) / \(format(model.duration))")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Button("Expand") { model.isCollapsed = false }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
                 }
-                .padding(8)
-            } else {
-                VStack(spacing: 6) {
-                    HStack(spacing: 10) {
-                        Button(model.isPlaying ? "Pause" : "Play") {
-                            model.isPlaying ? model.pause() : model.resume()
+                
+                Spacer()
+                
+                // Control buttons
+                HStack(spacing: 12) {
+                    // Stop button
+                    Button(action: { model.stop() }) {
+                        Image(systemName: "stop.fill")
+                            .font(.title3)
+                            .foregroundColor(.red)
+                            .frame(width: 32, height: 32)
+                            .background(Color.red.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    
+                    // Expand/Collapse button
+                    Button(action: { 
+                        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                            isExpanded.toggle()
                         }
-                        Button("Stop") { model.stop() }
-                        Text(model.title).lineLimit(1)
-                        Spacer()
-                        Text("\(format(model.currentTime)) / \(format(model.duration))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Hide") { model.isCollapsed = true }
+                    }) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                            .font(.title3)
+                            .foregroundColor(.primary)
+                            .frame(width: 32, height: 32)
+                            .background(Color.primary.opacity(0.1))
+                            .clipShape(Circle())
                     }
-                    Slider(value: Binding(get: {
-                        model.duration > 0 ? model.currentTime / model.duration : 0
-                    }, set: { v in
-                        model.seek(to: v * (model.duration > 0 ? model.duration : 0))
-                    }))
-                    if !model.debugText.isEmpty {
-                        Text(model.debugText).font(.caption2).foregroundStyle(.secondary)
+                    
+                    // Hide button
+                    Button(action: { 
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            model.isHidden = true
+                        }
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.title3)
+                            .foregroundColor(.red)
+                            .frame(width: 32, height: 32)
+                            .background(Color.red.opacity(0.1))
+                            .clipShape(Circle())
                     }
                 }
-                .padding(10)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            
+            // Expanded section with progress bar
+            if isExpanded {
+                VStack(spacing: 16) {
+                    // Progress bar
+                    VStack(spacing: 8) {
+                        HStack {
+                            Text(format(model.currentTime))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .monospacedDigit()
+                            
+                            Spacer()
+                            
+                            Text(format(model.duration))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .monospacedDigit()
+                        }
+                        
+                        // Custom progress slider
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                // Background track
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.secondary.opacity(0.2))
+                                    .frame(height: 8)
+                                
+                                // Progress bar
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color.blue, Color.cyan],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .frame(
+                                        width: progressWidth(in: geometry),
+                                        height: 8
+                                    )
+                                    .shadow(color: .cyan.opacity(0.5), radius: 2)
+                                
+                                // Draggable handle
+                                Circle()
+                                    .fill(Color.white)
+                                    .frame(width: 20, height: 20)
+                                    .shadow(color: .black.opacity(0.3), radius: 3)
+                                    .position(x: progressWidth(in: geometry) - 10, y: 4)
+                            }
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        let progress = value.location.x / geometry.size.width
+                                        let time = max(0, min(progress * model.duration, model.duration))
+                                        model.seek(to: time)
+                                    }
+                            )
+                        }
+                        .frame(height: 20)
+                    }
+                    
+                    // Debug info (if available)
+                    if !model.debugText.isEmpty {
+                        Text(model.debugText)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 16)
+                    }
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .move(edge: .top).combined(with: .opacity)
+                ))
             }
         }
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(radius: 4)
-        .padding(.horizontal, 8)
-        .padding(.bottom, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
     }
-
-    private func format(_ t: TimeInterval) -> String {
+    
+    private func progressWidth(in geometry: GeometryProxy) -> CGFloat {
+        guard model.duration > 0 else { return 0 }
+        return (model.currentTime / model.duration) * geometry.size.width
+    }
+    
+    func format(_ t: TimeInterval) -> String {
         guard t.isFinite else { return "0:00" }
         let total = Int(t.rounded())
         let m = total / 60

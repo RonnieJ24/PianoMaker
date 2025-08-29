@@ -11,278 +11,43 @@ struct HomeView: View {
         NavigationStack {
             List {
                 // Network and Server Status Section
-                Section("Connection Status") {
-                    HStack {
-                        Image(systemName: vm.serverReachable ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundColor(vm.serverReachable ? .green : .red)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(vm.serverReachable ? "Server Connected" : "Server Unreachable")
-                                .font(.headline)
-                            Text("Network: \(vm.networkStatus)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Refresh") {
-                            Task { await vm.refreshServerStatus() }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(vm.isUploading || vm.isSeparating)
-                    }
-                    
-                    if let errorMsg = vm.errorMessage {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
-                                Text("Error")
-                                    .font(.headline)
-                                Spacer()
-                                Button("Clear") {
-                                    vm.clearErrors()
-                                }
-                                .buttonStyle(.bordered)
-                                Button("Details") {
-                                    showErrorDetails = true
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                            Text(errorMsg)
-                                .font(.body)
-                                .foregroundColor(.red)
-                        }
-                        .padding(.vertical, 4)
-                    }
+                serverStatusSection
+                
+                // Professional Mode Indicator
+                if vm.transcriptionMode == "professional" {
+                    professionalModeSection
                 }
+                
 
-                Section("Selected audio") {
-                    if let url = vm.selectedFileURL {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(url.lastPathComponent).font(.headline)
-                            WaveformView(url: url)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Original")
-                                // Prevent triggering list row selection or any parent button actions
-                                AudioPreview(url: url)
-                                    .environmentObject(globalPlayer)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { /* consume taps */ }
-                            }
-                                    VStack(alignment: .leading, spacing: 8) {
-            Text("Transcription Mode:")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            
-            Picker("Transcription Quality", selection: $vm.transcriptionMode) {
-                Text("Pure Basic Pitch").tag("pure")
-                Text("Hybrid").tag("hybrid")
-                Text("AI Enhanced").tag("enhanced")
-            }.pickerStyle(.segmented)
-            
-            Text(vm.transcriptionMode == "pure" ? "Website-style output with no post-processing" : 
-                 vm.transcriptionMode == "hybrid" ? "Basic Pitch + AI enhancement (MUCH SHARPER + light cleanup + chord filling)" :
-                 "Enhanced with quantization, humanization, and AI refinement")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                                
-                                HStack {
-                                    Spacer()
-                                    Button(vm.isUploading ? "Processing…" : "Convert to MIDI") {
-                                        vm.startTranscription()
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(vm.isUploading || !vm.serverReachable)
-                                    Button("Stop") { vm.cancelCurrentWork() }
-                                    .disabled(!(vm.isUploading || vm.isSeparating))
-                                }
-                                VStack(spacing: 8) {
-                                    HStack {
-                                        Text("Audio Separation:")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Spacer()
-                                    }
-                                    
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text("Separation: High Quality (Demucs)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    
-                                    HStack(spacing: 12) {
-                                        Button(vm.isSeparating ? "Separating..." : "Separate Vocals/Music") {
-                                            vm.startSeparation()
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .disabled(vm.selectedFileURL == nil || vm.isSeparating || !vm.serverReachable)
-                                        
-                                        if vm.isSeparating {
-                                            ProgressView()
-                                                .scaleEffect(0.8)
-                                        }
-                                        
-                                        if let backend = vm.separationBackend {
-                                            Text("Using: \(backend.replacingOccurrences(of: "_", with: " "))")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    
-                                    // Show separation success message
-                                    if vm.instrumentalURL != nil || vm.vocalsURL != nil {
-                                        HStack {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundColor(.green)
-                                            Text("Separation completed! Both vocal and instrumental tracks are ready.")
-                                                .font(.caption)
-                                                .foregroundColor(.green)
-                                            Spacer()
-                                        }
-                                        .padding(.vertical, 4)
-                                        .padding(.horizontal, 8)
-                                        .background(Color.green.opacity(0.1))
-                                        .cornerRadius(6)
-                                    }
-                                    
-                                    // Show separation source info
-                                    if let source = vm.separationSource {
-                                        HStack {
-                                            Image(systemName: source.contains("cloud") ? "cloud.fill" : "cpu")
-                                                .foregroundColor(source.contains("cloud") ? .blue : .green)
-                                            Text("Processing: \(source.replacingOccurrences(of: "_", with: " "))")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            Spacer()
-                                        }
-                                    }
-                                    
-                                    if let cloudModel = vm.separationCloudModel {
-                                        HStack {
-                                            Image(systemName: "cpu.fill")
-                                                .foregroundColor(.blue)
-                                            Text("Model: \(cloudModel)")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            Spacer()
-                                        }
-                                    }
-                                }
-
-                                if let msg = vm.infoMessage { Text(msg).font(.caption).foregroundStyle(.secondary) }
-                                if let t = vm.progressText { Text(t).font(.caption).foregroundStyle(.secondary) }
-
-                            }
-                        }
-                    } else {
-                        Text("No file selected")
-                    }
+                
+                // Transcription Controls
+                transcriptionControlsSection
+                
+                // Audio Separation Section
+                audioSeparationSection
+                
+                // Selected Audio Section
+                if let url = vm.selectedFileURL {
+                    selectedAudioSection(url: url)
                 }
-
+                
+                // MIDI Result Section (when transcription is complete)
                 if let midi = vm.midiLocalURL {
-                    Section("Result") {
-                        NavigationLink(destination: DetailViewWithLivePlayer(vm: vm)) {
-                            VStack(alignment: .leading) {
-                                Text("MIDI ready: \(midi.lastPathComponent)")
-                                if let notes = vm.notesCount, let dur = vm.durationSec {
-                                    Text("Notes: \(notes), Duration: \(String(format: "%.1f", dur))s").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        
-
-                    }
+                    midiResultSection(midi: midi)
                 }
-
-                if vm.instrumentalURL != nil || vm.vocalsURL != nil {
-                    Section("Separated tracks") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Separation completed successfully!")
-                                .font(.headline)
-                                .foregroundColor(.green)
-                            
-                            // Debug info
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Debug Info:")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text("instrumentalURL: \(vm.instrumentalURL?.absoluteString ?? "nil")")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Text("vocalsURL: \(vm.vocalsURL?.absoluteString ?? "nil")")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(4)
-                            
-                            if let i = vm.instrumentalURL {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Image(systemName: "music.note.list")
-                                            .foregroundColor(.blue)
-                                        Text("Instrumental (Music without vocals)")
-                                            .font(.headline)
-                                    }
-                                    AudioPreview(url: i)
-                                        .environmentObject(globalPlayer)
-                                    HStack {
-                                        Button("Use instrumental for transcription") {
-                                            vm.setSelectedFile(i)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        Button("Convert instrumental → MIDI") {
-                                            Task { await vm.convertInstrumentalToMIDI() }
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                    }
-                                }
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(Color.blue.opacity(0.1))
-                                .cornerRadius(8)
-                            }
-                            
-                            if let v = vm.vocalsURL {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Image(systemName: "person.wave.2")
-                                            .foregroundColor(.purple)
-                                        Text("Vocals (Voice only)")
-                                            .font(.headline)
-                                    }
-                                    AudioPreview(url: v)
-                                        .environmentObject(globalPlayer)
-                                    HStack {
-                                        Button("Use vocals for transcription") {
-                                            vm.setSelectedFile(v)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        Button("Convert vocals → MIDI") {
-                                            Task { await vm.convertVocalsToMIDI() }
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                    }
-                                }
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(Color.purple.opacity(0.1))
-                                .cornerRadius(8)
-                            }
-                        }
-                    }
+                
+                // Progress and Info Section
+                if let msg = vm.infoMessage {
+                    infoSection(message: msg)
                 }
-
+                
+                if let t = vm.progressText {
+                    progressSection(text: t)
+                }
+                
+                // Recent Section
                 if !vm.history.isEmpty {
-                    Section("Recent") {
-                        ForEach(vm.history) { item in
-                            VStack(alignment: .leading) {
-                                Text(item.sourceFileName)
-                                Text(item.midiLocalURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
+                    recentSection
                 }
             }
             .navigationTitle("PianoMaker")
@@ -294,51 +59,85 @@ struct HomeView: View {
                             Task { await vm.refreshServerStatus() }
                         }
                         Button("Clear Errors") {
-                            vm.clearErrors()
+                            vm.errorMessage = nil
                         }
                     } label: {
-                        Label("Actions", systemImage: "ellipsis.circle")
+                        Image(systemName: "ellipsis.circle")
                     }
                 }
-            }
-            // Show current backend at a glance for debugging
-            .safeAreaInset(edge: .top) {
-                HStack {
-                    Text("Server: \(UserDefaults.standard.string(forKey: "server_url") ?? Config.serverBaseURL.absoluteString)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-                .background(.ultraThinMaterial)
-            }
-            .overlay(alignment: .bottom) {
-                VStack(spacing: 8) {
-                    if vm.isUploading || vm.isSeparating {
-                        VStack(spacing: 8) {
-                            ProgressView()
-                            if let t = vm.progressText { Text(t).font(.caption2).foregroundStyle(.secondary) }
-                        }
-                    }
-                    GlobalAudioPlayerView()
-                        .environmentObject(globalPlayer)
-                        .opacity(globalPlayer.currentURL == nil ? 0 : 1)
-                }
-                .padding(.bottom, 8)
             }
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
-            switch result {
-            case .success(let urls):
-                if let first = urls.first {
-                    vm.setSelectedFile(first)
+        .background(
+            // Global Audio Player at bottom - using background to avoid toolbar interference
+            VStack {
+                Spacer()
+                
+                // Debug info
+                if globalPlayer.currentURL == nil {
+                    Text("Global Player: No URL set")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .padding(.bottom, 10)
                 }
-            case .failure:
-                break
+                
+                if globalPlayer.currentURL != nil && !globalPlayer.isHidden {
+                    ModernGlobalAudioPlayerView()
+                        .environmentObject(globalPlayer)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                
+                // Show player button when hidden
+                if globalPlayer.currentURL != nil && globalPlayer.isHidden {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            globalPlayer.isHidden = false
+                        }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "play.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.blue)
+                            Text("Show Player")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.blue)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
+                    }
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                
+                // Test button to show global player
+                Button(action: {
+                    // Set a test URL to make the global player visible
+                    globalPlayer.play(url: URL(string: "test://audio.mp3")!)
+                }) {
+                    Text("Test Global Player")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                }
+                .padding(.bottom, 10)
             }
+        )
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio]) { result in
+            switch result {
+            case .success(let url):
+                vm.selectedFileURL = url
+            case .failure(let error):
+                vm.errorMessage = "Failed to import file: \(error.localizedDescription)"
+            }
+        }
+        .task {
+            await vm.refreshServerStatus()
         }
         .alert("Error", isPresented: Binding<Bool>(
             get: { vm.errorMessage != nil },
@@ -348,63 +147,204 @@ struct HomeView: View {
         } message: {
             Text(vm.errorMessage ?? "Unknown error")
         }
-        .sheet(isPresented: $showErrorDetails) {
-            ErrorDetailsView(errorDetails: vm.lastErrorDetails ?? "No detailed error information available")
-        }
     }
-}
-
-struct ErrorDetailsView: View {
-    let errorDetails: String
-    @Environment(\.dismiss) private var dismiss
     
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Error Details")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    Text("This information can help debug connection issues:")
+    // MARK: - View Components
+    
+    private var serverStatusSection: some View {
+        Section("Connection Status") {
+            HStack {
+                Image(systemName: vm.serverReachable ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(vm.serverReachable ? .green : .red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vm.serverReachable ? "Connected to server" : "Server unreachable")
+                        .font(.body)
+                    Text(Config.serverBaseURL.absoluteString)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
-                    Text(errorDetails)
-                        .font(.system(.body, design: .monospaced))
-                        .padding()
-                        .background(Color(.systemGray6))
-                        .cornerRadius(8)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Common Issues:")
-                            .font(.headline)
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("• Server not running")
-                            Text("• Wrong IP address or port")
-                            Text("• Firewall blocking connection")
-                            Text("• Network configuration issues")
-                        }
+                }
+                Spacer()
+                if vm.serverReachable {
+                    Text("Server ready")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    
+    private var professionalModeSection: some View {
+        Section("🎯 Professional Mode Active") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "star.fill")
+                        .foregroundColor(.yellow)
+                    Text("Studio-Quality Output")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                }
+                
+                Text("This mode provides the highest quality local processing with:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                        Text("Studio-quality velocity shaping")
+                            .font(.caption)
+                    }
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                        Text("Professional timing and expression")
+                            .font(.caption)
+                    }
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                        Text("Rich sustain and legato handling")
+                            .font(.caption)
+                    }
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                        Text("Musical phrase awareness")
+                            .font(.caption)
                     }
                 }
-                .padding()
+                .padding(.leading, 8)
             }
-            .navigationTitle("Error Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .background(Color.yellow.opacity(0.1))
+            .cornerRadius(8)
+        }
+    }
+    
+
+    
+    private var transcriptionControlsSection: some View {
+        Section("Transcription Controls") {
+            Picker("Transcription Quality", selection: $vm.transcriptionMode) {
+                Text("Pure").tag("pure")
+                Text("Hybrid").tag("hybrid")
+                Text("Professional").tag("professional")
+                Text("AI Enhanced").tag("enhanced")
+            }.pickerStyle(.segmented)
+            
+            Text(vm.transcriptionMode == "pure" ? "Website-style output with no post-processing" : 
+                 vm.transcriptionMode == "hybrid" ? "Basic Pitch + AI enhancement (Studio-quality velocity + professional timing + rich sustain)" :
+                 vm.transcriptionMode == "professional" ? "Studio-quality local processing (Best for professional output)" :
+                 "Enhanced with quantization, humanization, and AI refinement")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            
+
+            
+            HStack {
+                Button("Convert to MIDI") {
+                    Task {
+                        await vm.transcribeSelectedFile()
                     }
+                }
+                .disabled(vm.selectedFileURL == nil || vm.isUploading)
+                .buttonStyle(.borderedProminent)
+                
+                if vm.isUploading {
+                    Text("Processing...")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    
+    private var audioSeparationSection: some View {
+        Section("Audio Separation:") {
+            Text("Separation: High Quality (Demucs)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            
+            Button("Separate Vocals/Music") {
+                Task {
+                    await vm.runSeparation()
+                }
+            }
+            .disabled(vm.selectedFileURL == nil || vm.isSeparating)
+            .buttonStyle(.borderedProminent)
+        }
+    }
+    
+    private func selectedAudioSection(url: URL) -> some View {
+        Section("Selected audio") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(url.lastPathComponent).font(.headline)
+                WaveformView(url: url)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Original")
+                    // Prevent triggering list row selection or any parent button actions
+                    AudioPreview(url: url)
+                        .environmentObject(globalPlayer)
+                        .contentShape(Rectangle())
+                        .onTapGesture { /* consume tap */ }
+                }
+            }
+        }
+    }
+    
+    private func midiResultSection(midi: URL) -> some View {
+        Section("Result") {
+            NavigationLink(destination: DetailViewWithLivePlayer(vm: vm)) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("MIDI ready: \(midi.lastPathComponent)")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    if let noteCount = vm.notesCount, let duration = vm.durationSec {
+                        Text("Notes: \(noteCount), Duration: \(String(format: "%.1fs", duration))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Text("Tap to view, play & render →")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+            }
+        }
+    }
+    
+    private func infoSection(message: String) -> some View {
+        Section("Info") {
+            Text(message).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    
+    private func progressSection(text: String) -> some View {
+        Section("Progress") {
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    
+    private var recentSection: some View {
+        Section("Recent") {
+            ForEach(vm.history) { item in
+                VStack(alignment: .leading) {
+                    Text(item.sourceFileName)
+                    Text(item.midiLocalURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
     }
 }
 
-#Preview { HomeView() }
+#Preview {
+    HomeView()
+}
 
 

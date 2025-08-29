@@ -38,6 +38,11 @@ struct FullScreenPianoVisualizer: View {
     @State private var isLoadingMIDI = true
     @State private var scrollOffset: CGFloat = 0
     @State private var performanceMetrics = PerformanceMetrics()
+    @State private var playbackSpeed: Float = 1.0
+    @State private var pianoOffset: CGSize = .zero
+    @State private var pianoScale: CGFloat = 1.0
+    @State private var lastPanOffset: CGSize = .zero // Track last pan position
+    @State private var isPanning = false // Track if currently panning
     
     @Environment(\.dismiss) private var dismiss
     
@@ -46,37 +51,245 @@ struct FullScreenPianoVisualizer: View {
             backgroundView
             pianoAndMidiView
         }
-        .overlay(stickyHUD, alignment: .top)
+        .overlay(compactControlsView, alignment: .bottom)
         .navigationBarHidden(true)
         .onAppear {
             print("🎵 FullScreenPianoVisualizer appeared")
             setupAudioPlayer()
             loadMIDINotes()
             startDisplayLink()
+            
+            // Ensure initial playback speed is set
+            updatePlaybackSpeed()
         }
         .onDisappear {
             stopDisplayLink()
             stopPlayback()
+            
+            // Reset playback speed when leaving
+            playbackSpeed = 1.0
+            updatePlaybackSpeed()
         }
         .onChange(of: isPlaying) { _, newValue in
             if newValue {
                 startDisplayLink()
+                // Ensure playback speed is maintained when resuming
+                updatePlaybackSpeed()
             } else {
                 stopDisplayLink()
             }
         }
+                        .onChange(of: playbackSpeed) { _, newValue in
+                    // Update the visual speed indicator in real-time
+                    print("🎵 Playback speed changed to: \(newValue)x")
+                    
+                    // Ensure the speed is applied to both players immediately
+                    DispatchQueue.main.async {
+                        updatePlaybackSpeed()
+                    }
+                }
+
     }
 
-    private var stickyHUD: some View {
+    private var compactControlsView: some View {
         VStack(spacing: 0) {
-            navigationBarView
-                .padding(.top, 8)
+            // Top bar with back button
+            HStack {
+                Button(action: { dismiss() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                            .font(.title3)
+                            .foregroundColor(.white)
+                        Text("Back")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.6))
+                    .cornerRadius(20)
+                }
+                
+                Spacer()
+                
+                // Time stamp display
+                Text(timeString(from: currentTime))
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                    .monospacedDigit()
+                
+                Spacer()
+                
+                // Speed indicator
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Text("\(Int(playbackSpeed * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fontWeight(.semibold)
+                }
                 .padding(.horizontal, 8)
-            transportControlsView
-            timeDisplayView
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.4))
+                .cornerRadius(12)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color.black.opacity(0.3))
+            
+            // Time bar with dragging
+            timeBarView
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            
+            // Transport controls
+            HStack(spacing: 16) {
+                // Play/Pause button
+                Button(action: togglePlayback) {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .frame(width: 50, height: 50)
+                        .background(
+                            LinearGradient(
+                                colors: isPlaying ? [Color.orange, Color.red] : [Color.blue, Color.cyan],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                }
+                
+                // Stop button
+                Button(action: stopPlayback) {
+                    Image(systemName: "stop.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Color.red.opacity(0.8))
+                        .clipShape(Circle())
+                }
+                
+                Spacer()
+                
+                // Compact speed control
+                HStack(spacing: 8) {
+                    Button(action: decreaseSpeed) {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.orange)
+                    }
+                    .disabled(playbackSpeed <= 0.25)
+                    
+                    Text("\(Int(playbackSpeed * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .frame(width: 35)
+                        .monospacedDigit()
+                    
+                    Button(action: increaseSpeed) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.orange)
+                    }
+                    .disabled(playbackSpeed >= 4.0)
+                    
+                    Button(action: resetSpeed) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .frame(width: 24, height: 24)
+                            .background(Color.gray.opacity(0.6))
+                            .clipShape(Circle())
+                    }
+                    .disabled(playbackSpeed == 1.0)
+                    
+                    // Reset Pan/Zoom button
+                    Button(action: resetPanAndZoom) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .frame(width: 24, height: 24)
+                            .background(Color.purple.opacity(0.6))
+                            .clipShape(Circle())
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.4))
+                .cornerRadius(20)
+                
+                Spacer()
+                
+                // Time display
+                VStack(spacing: 2) {
+                    Text(timeString(from: currentTime))
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                    Text("/ \(timeString(from: duration))")
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                        .monospacedDigit()
+                }
+                .frame(width: 60)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                LinearGradient(
+                    colors: [Color.black.opacity(0.8), Color.black.opacity(0.6)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
         }
-        .background(.ultraThinMaterial)
-        .ignoresSafeArea(edges: .top)
+        .frame(height: 140) // Increased height for time bar and top controls
+    }
+    
+    private var timeBarView: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                // Background track
+                Rectangle()
+                    .fill(Color.white.opacity(0.3))
+                    .frame(height: 6)
+                    .cornerRadius(3)
+                
+                // Progress bar
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue, Color.cyan, Color.blue],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: progressWidth(in: geometry), height: 6)
+                    .cornerRadius(3)
+                    .shadow(color: .cyan, radius: 2)
+                
+                // Draggable handle
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 20, height: 20)
+                    .shadow(color: .black.opacity(0.3), radius: 2)
+                    .position(x: progressWidth(in: geometry) - 10, y: 3)
+            }
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        let progress = value.location.x / geometry.size.width
+                        let time = max(0, min(progress * duration, duration))
+                        seekTo(time: time)
+                    }
+            )
+        }
+        .frame(height: 20)
     }
     
     private var backgroundView: some View {
@@ -189,16 +402,30 @@ struct FullScreenPianoVisualizer: View {
     }
     
     private var titleView: some View {
-        Text("Piano Visualizer")
-            .font(.title2)
-            .fontWeight(.bold)
-            .foregroundColor(.white)
+        VStack(spacing: 4) {
+            Text("Piano Visualizer")
+                .font(.title2)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+            
+            HStack(spacing: 4) {
+                Image(systemName: "speedometer")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Text("\(Int(playbackSpeed * 100))%")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fontWeight(.semibold)
+            }
+        }
     }
     
     private var transportControlsView: some View {
         HStack(spacing: 16) {
             playPauseButton
             stopButton
+            Spacer()
+            speedControlView
             Spacer()
             zoomControlsView
             Spacer()
@@ -257,6 +484,60 @@ struct FullScreenPianoVisualizer: View {
         }
     }
     
+    private var speedControlView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "speedometer")
+                .font(.caption)
+                .foregroundColor(.white)
+                .frame(width: 20)
+            
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    Button(action: decreaseSpeed) {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                    .disabled(playbackSpeed <= 0.25)
+                    
+                    Text("\(Int(playbackSpeed * 100))%")
+                        .font(.caption2)
+                        .foregroundColor(.white)
+                        .frame(width: 40)
+                        .monospacedDigit()
+                    
+                    Button(action: increaseSpeed) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                    .disabled(playbackSpeed >= 4.0)
+                }
+                
+                Slider(value: $playbackSpeed, in: 0.25...4.0, step: 0.25)
+                    .accentColor(.orange)
+                    .frame(width: 80)
+                .onChange(of: playbackSpeed) { _, newValue in
+                    updatePlaybackSpeed()
+                    
+                    // Update the visual speed indicator in real-time
+                    print("🎵 Playback speed changed to: \(newValue)x")
+                }
+                
+                Button(action: resetSpeed) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption2)
+                        .foregroundColor(.white)
+                }
+                .disabled(playbackSpeed == 1.0)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.black.opacity(0.2))
+        .cornerRadius(8)
+    }
+    
     private var zoomControlsView: some View {
         HStack(spacing: 8) {
             Button(action: zoomOut) {
@@ -291,7 +572,7 @@ struct FullScreenPianoVisualizer: View {
                             )
                         )
                         .frame(width: 32, height: 32)
-                        .shadow(color: Color.green.opacity(0.8), radius: 6, x: 0, y: 3)
+                        .shadow(color: Color.green.opacity(0.7), radius: 6, x: 0, y: 3)
 
                     Image(systemName: "plus.magnifyingglass")
                         .font(.caption)
@@ -358,6 +639,23 @@ struct FullScreenPianoVisualizer: View {
                 
                 Spacer()
                 
+                // Speed indicator
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                    Text("\(Int(playbackSpeed * 100))%")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.orange)
+                        .fontWeight(.semibold)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange.opacity(0.2))
+                .cornerRadius(4)
+                
+                Spacer()
+                
                 Text(formatTime(duration))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundColor(.white.opacity(0.7))
@@ -401,6 +699,10 @@ struct FullScreenPianoVisualizer: View {
                         let time = max(0, min(progress * duration, duration))
                         seekTo(time: time)
                     }
+                    .onEnded { _ in
+                        // Ensure playback speed is maintained after dragging
+                        updatePlaybackSpeed()
+                    }
             )
         }
         .frame(height: 6)
@@ -418,12 +720,12 @@ struct FullScreenPianoVisualizer: View {
                 midiGridView
                     .frame(height: Self.totalPianoHeight)
             }
-            .scaleEffect(x: scale, y: 1.0, anchor: .topLeading)
+            .scaleEffect(x: scale * pianoScale, y: pianoScale, anchor: .topLeading)
+            .offset(pianoOffset)
             .frame(width: outer.size.width, height: Self.totalPianoHeight, alignment: .topLeading)
             .contentShape(Rectangle())
         }
-        .background(Color.black.opacity(0.3))
-        .gesture(
+        .simultaneousGesture(
             MagnificationGesture()
                 .onChanged { value in
                     timeZoom = max(0.5, min(3.0, baseTimeZoom * value))
@@ -431,13 +733,49 @@ struct FullScreenPianoVisualizer: View {
                 }
                 .onEnded { _ in baseTimeZoom = timeZoom }
         )
-        .gesture(
+        .simultaneousGesture(
             DragGesture(minimumDistance: 5)
                 .onChanged { value in
-                    let seconds = Double(-value.translation.width) / Double(Self.pixelsPerSecond * timeZoom)
-                    let newTime = max(0.0, min(duration, currentTime + seconds))
-                    currentTime = newTime
-                    wavPlayer?.currentTime = newTime
+                    // Only allow time seeking when not panning
+                    if !isPanning {
+                        let seconds = Double(-value.translation.width) / Double(Self.pixelsPerSecond * timeZoom)
+                        let newTime = max(0.0, min(duration, currentTime + seconds))
+                        currentTime = newTime
+                        wavPlayer?.currentTime = newTime
+                    }
+                }
+                .onEnded { _ in
+                    // Ensure playback speed is maintained after dragging
+                    updatePlaybackSpeed()
+                }
+        )
+        .simultaneousGesture(
+            // Piano pan gesture - separate from time seeking
+            DragGesture(minimumDistance: 15)
+                .onChanged { value in
+                    isPanning = true
+                    // Accumulate pan offset from the last position
+                    pianoOffset = CGSize(
+                        width: lastPanOffset.width + value.translation.width,
+                        height: lastPanOffset.height + value.translation.height
+                    )
+                }
+                .onEnded { _ in
+                    isPanning = false
+                    // Store the final pan position
+                    lastPanOffset = pianoOffset
+                }
+        )
+        .simultaneousGesture(
+            // Piano zoom gesture with better limits
+            MagnificationGesture()
+                .onChanged { value in
+                    let newScale = max(0.3, min(3.0, value))
+                    pianoScale = newScale
+                }
+                .onEnded { _ in
+                    // Ensure scale stays within bounds
+                    pianoScale = max(0.3, min(3.0, pianoScale))
                 }
         )
     }
@@ -589,6 +927,9 @@ struct PianoRollCanvas: View {
                 print("🎵 WARNING: Could not load MIDI for visuals: \(error)")
             }
             
+            // Set initial playback speed
+            updatePlaybackSpeed()
+            
             if wavSuccess {
                 isPlaying = true
                 print("🎵 DEBUG: Playback started successfully")
@@ -603,7 +944,11 @@ struct PianoRollCanvas: View {
     private func pausePlayback() {
         wavPlayer?.pause()
         isPlaying = false
-        print("🎵 DEBUG: Playback paused")
+        
+        // Ensure playback speed is maintained when pausing
+        updatePlaybackSpeed()
+        
+        print("🎵 DEBUG: Playback paused, speed: \(playbackSpeed)x")
     }
     
     private func stopPlayback() {
@@ -611,7 +956,14 @@ struct PianoRollCanvas: View {
         wavPlayer?.currentTime = 0
         currentTime = 0
         isPlaying = false
-        print("🎵 DEBUG: Playback stopped")
+        
+        // Reset playback speed when stopping
+        withAnimation(.easeInOut(duration: 0.2)) {
+            playbackSpeed = 1.0
+        }
+        updatePlaybackSpeed()
+        
+        print("🎵 DEBUG: Playback stopped, speed reset to 1.0x")
     }
     
     private func seekTo(time: Double) {
@@ -624,7 +976,11 @@ struct PianoRollCanvas: View {
         let validTime = max(0, min(time, duration))
         wavPlayer?.currentTime = validTime
         currentTime = validTime
-        print("🎵 DEBUG: Seeked to \(validTime)s")
+        
+        // Ensure playback speed is maintained after seeking
+        updatePlaybackSpeed()
+        
+        print("🎵 DEBUG: Seeked to \(validTime)s, speed: \(playbackSpeed)x")
     }
     
     private func setupAudioPlayer() {
@@ -939,6 +1295,12 @@ struct PianoRollCanvas: View {
             [self] in
             updateCurrentTime()
         }), selector: #selector(DisplayLinkTarget.update))
+        
+        // Set preferred frame rate and respect playback speed
+        if #available(iOS 15.0, *) {
+            displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 60)
+        }
+        
         displayLink?.add(to: .main, forMode: .common)
         print("🎵 DEBUG: Display link started")
     }
@@ -951,8 +1313,12 @@ struct PianoRollCanvas: View {
     
     private func updateCurrentTime() {
         guard let player = wavPlayer else { return }
-        let newTime = player.currentTime
-        currentTime = newTime
+        
+        // Apply playback speed to time progression
+        let baseTime = player.currentTime
+        let speedAdjustedTime = baseTime * Double(playbackSpeed)
+        currentTime = speedAdjustedTime
+        
         updateActiveNotes()
         updatePerformanceMetrics()
     }
@@ -1010,6 +1376,49 @@ struct PianoRollCanvas: View {
         performanceMetrics.updateNoteCount(midiNotes.count)
     }
     
+    // MARK: - Speed Control Functions
+    
+    private func increaseSpeed() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            playbackSpeed = min(playbackSpeed + 0.25, 4.0)
+        }
+        updatePlaybackSpeed()
+    }
+    
+    private func decreaseSpeed() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            playbackSpeed = max(playbackSpeed - 0.25, 0.25)
+        }
+        updatePlaybackSpeed()
+    }
+    
+    private func updatePlaybackSpeed() {
+        // Update MIDI player speed
+        midiPlayer?.rate = playbackSpeed
+        
+        // Update WAV player speed if available
+        if let player = wavPlayer {
+            player.rate = playbackSpeed
+        }
+        
+        print("🎵 Playback speed changed to: \(playbackSpeed)x")
+    }
+    
+    private func timeString(from time: Double) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+
+    
+    private func resetSpeed() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            playbackSpeed = 1.0
+        }
+        updatePlaybackSpeed()
+    }
+    
     // MARK: - Zoom Functions
     
     private func zoomIn() {
@@ -1025,7 +1434,20 @@ struct PianoRollCanvas: View {
             isZoomedIn = timeZoom > 1.0
         }
     }
+    
+    private func resetPanAndZoom() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            pianoOffset = .zero
+            lastPanOffset = .zero
+            pianoScale = 1.0
+            timeZoom = 1.0
+            baseTimeZoom = 1.0
+            isZoomedIn = false
+        }
+    }
 }
+
+
 
 // Helper class for CADisplayLink
 private class DisplayLinkTarget {
